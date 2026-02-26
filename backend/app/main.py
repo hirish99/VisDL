@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import settings
 from .api.routes import router
 from .api.websocket import manager
+from .api.system_monitor import system_monitor_ws
 
 
 @asynccontextmanager
@@ -42,3 +43,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
             data = await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(session_id, websocket)
+
+
+@app.websocket("/ws/system/{session_id}")
+async def system_monitor_endpoint(websocket: WebSocket, session_id: str):
+    await system_monitor_ws(websocket, session_id)

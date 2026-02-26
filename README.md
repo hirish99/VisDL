@@ -3,27 +3,80 @@
 
 Visual Deep Learning Research Tool — a ComfyUI-style web app for constructing, training, and ablating neural network architectures through a node graph UI.
 
-## Quick Start
+<!-- TODO: add screenshot -->
 
-### Backend
+## Prerequisites
+
+- Python 3.10+
+- Node.js 18+
+- NVIDIA GPU with CUDA (optional, but recommended for training)
+
+## Setup
+
+### 1. Clone the repo
+
 ```bash
-cd backend
-../.venv/bin/python run.py
+git clone <repo-url>
+cd VisDL
 ```
-Runs on http://localhost:8000
 
-### Frontend
+### 2. Create and activate a Python virtual environment
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+### 3. Install backend dependencies
+
+```bash
+pip install -r backend/requirements.txt
+```
+
+> **Note on PyTorch:** The `requirements.txt` lists `torch>=2.1.0`, which installs CPU-only by default. For GPU support, install PyTorch with CUDA separately first — see https://pytorch.org/get-started/locally/ for the correct command for your CUDA version. Example:
+> ```bash
+> pip install torch --index-url https://download.pytorch.org/whl/cu128
+> ```
+
+### 4. Install frontend dependencies
+
 ```bash
 cd frontend
-npm run dev -- --host 0.0.0.0
+npm install
+cd ..
 ```
-Runs on http://localhost:5173 (proxies API calls to backend)
 
-### SSH Access
-If accessing remotely, forward both ports:
+## Running
+
+You need **two terminals** (or use `&` / tmux / screen).
+
+### Terminal 1 — Backend
+
+```bash
+cd VisDL
+.venv/bin/python backend/run.py
+```
+
+The API server starts at **http://localhost:8000**.
+
+### Terminal 2 — Frontend
+
+```bash
+cd VisDL/frontend
+npm run dev
+```
+
+The UI starts at **http://localhost:5173**. Open this URL in your browser. The Vite dev server proxies `/api` and `/ws` requests to the backend automatically.
+
+### Remote / SSH Access
+
+If the server is on a remote machine, forward both ports:
+
 ```bash
 ssh -L 5173:localhost:5173 -L 8000:localhost:8000 user@host
 ```
+
+Then open **http://localhost:5173** on your local machine.
 
 ## Architecture
 
@@ -34,14 +87,14 @@ Browser (React Flow)  <->  FastAPI Backend (Python)
    +- Canvas (drag/connect)  +- Graph Validator (DAG, types)
    +- Properties Panel       +- Execution Engine (topo sort)
    +- Training Dashboard     +- Training Loop (PyTorch, GPU)
-   +- Ablation Panel         +- WebSocket (real-time progress)
+   +- System Status Bar      +- WebSocket (real-time progress)
 ```
 
 ## Tech Stack
 
 - **Backend**: Python, FastAPI, PyTorch, Pydantic
 - **Frontend**: React, TypeScript, React Flow, Zustand, Recharts, Vite
-- **Communication**: REST for CRUD, WebSocket for real-time training telemetry
+- **Communication**: REST for CRUD, WebSocket for real-time training telemetry and system monitoring
 
 ## Node Types (17)
 
@@ -84,6 +137,7 @@ Auto-discovered on startup. No registration boilerplate elsewhere.
 - **Layer specs, not live modules**: Layer nodes emit spec dicts. ModelAssembly builds `nn.Sequential` with automatic shape inference.
 - **GPU-aware**: Model placed on CUDA if available; training loop moves batches to model's device.
 - **Ablation as first-class**: Every node has a disable toggle. Disabled layers become `nn.Identity`. Save/compare configs side-by-side.
+- **Live system monitoring**: CPU, RAM, GPU utilization, and VRAM usage streamed over WebSocket and displayed in the status bar.
 
 ## Sample Data
 
@@ -93,20 +147,25 @@ Auto-discovered on startup. No registration boilerplate elsewhere.
 
 ```
 backend/
+  run.py                   # Entry point (starts uvicorn)
+  requirements.txt         # Python dependencies
   app/
-    main.py              # FastAPI app, CORS, lifespan
-    config.py            # Pydantic settings
-    api/routes.py        # REST endpoints
-    api/websocket.py     # WS connection manager
-    engine/executor.py   # Topo sort + execute
-    engine/validator.py  # DAG/type/input validation
-    nodes/               # All node implementations (auto-discovered)
-    models/schemas.py    # Pydantic request/response models
+    main.py                # FastAPI app, CORS, lifespan, WS endpoints
+    config.py              # Pydantic settings
+    api/routes.py          # REST endpoints
+    api/websocket.py       # WS connection manager (training telemetry)
+    api/system_monitor.py  # WS system stats (CPU/RAM/GPU)
+    engine/executor.py     # Topo sort + execute
+    engine/validator.py    # DAG/type/input validation
+    nodes/                 # All node implementations (auto-discovered)
+    models/schemas.py      # Pydantic request/response models
 frontend/
+  package.json             # Node dependencies
+  vite.config.ts           # Dev server + proxy config
   src/
-    App.tsx              # Main layout
-    store/               # Zustand (graphStore, executionStore)
-    components/          # Canvas, NodePalette, NodeTypes, Panels
-    hooks/               # useWebSocket, useNodeRegistry
-    api/client.ts        # REST/WS client
+    App.tsx                # Main layout
+    store/                 # Zustand (graphStore, executionStore)
+    components/            # Canvas, NodePalette, NodeTypes, Panels, StatusBar
+    hooks/                 # useWebSocket, useNodeRegistry, useSystemMonitor
+    api/client.ts          # REST/WS client
 ```
