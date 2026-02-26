@@ -1,4 +1,5 @@
 # VisDL
+<img width="1680" height="1050" alt="Screenshot 2026-02-26 at 1 11 00 AM" src="https://github.com/user-attachments/assets/9cd980fd-cf0c-45cb-9a5c-57bc1b8c30ac" />
 
 Visual Deep Learning Research Tool — a ComfyUI-style web app for constructing, training, and ablating neural network architectures through a node graph UI.
 
