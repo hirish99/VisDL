@@ -14,7 +14,7 @@ interface ExecutionState {
   sessionId: string;
   executionId: string | null;
   progress: TrainingProgress[];
-  results: Record<string, unknown[]>;
+  results: Record<string, unknown>;
   errors: string[];
   ablationRuns: AblationRun[];
 
@@ -22,7 +22,7 @@ interface ExecutionState {
   setSessionId: (id: string) => void;
   setExecutionId: (id: string | null) => void;
   addProgress: (p: TrainingProgress) => void;
-  setResults: (r: Record<string, unknown[]>) => void;
+  setResults: (r: Record<string, unknown>) => void;
   setErrors: (e: string[]) => void;
   clearProgress: () => void;
   addAblationRun: (run: AblationRun) => void;

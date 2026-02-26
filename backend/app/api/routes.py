@@ -8,10 +8,12 @@ from typing import Any
 
 import pandas as pd
 from fastapi import APIRouter, HTTPException, UploadFile, File, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
 
 from ..config import settings
 from ..engine.executor import execute_graph
 from ..engine.graph import Edge, Graph, NodeInstance
+from ..engine.pipeline import execute_pipeline
 from ..engine.validator import validate_graph
 from ..models.schemas import (
     ExecuteRequest, ExecuteResponse, GraphSchema,
@@ -25,7 +27,6 @@ executor_pool = ThreadPoolExecutor(max_workers=4)
 
 # In-memory stores
 _results: dict[str, Any] = {}
-_saved_graphs: dict[str, SavedGraph] = {}
 
 
 def _schema_to_graph(schema: GraphSchema) -> Graph:
@@ -80,13 +81,9 @@ async def list_nodes():
 
 @router.post("/execute", response_model=ExecuteResponse)
 async def execute(request: ExecuteRequest):
-    """Validate and execute a graph."""
-    graph = _schema_to_graph(request.graph)
-    errors = validate_graph(graph)
-    if errors:
-        return ExecuteResponse(
-            execution_id="", status="error", errors=errors,
-        )
+    """Execute the training pipeline: layer graph + config."""
+    layer_graph = _schema_to_graph(request.graph)
+    config = request.config.model_dump()
 
     session_id = request.session_id or str(uuid.uuid4())
     execution_id = str(uuid.uuid4())
@@ -94,18 +91,16 @@ async def execute(request: ExecuteRequest):
     progress_cb = manager.make_progress_callback(session_id, loop)
 
     def run():
-        return execute_graph(graph, progress_callback=progress_cb)
+        return execute_pipeline(layer_graph, config, progress_callback=progress_cb)
 
     try:
-        # Notify start
         await manager.send_to_session(session_id, {
             "type": "execution_start", "execution_id": execution_id,
         })
 
         results = await asyncio.get_event_loop().run_in_executor(executor_pool, run)
 
-        # Serialize results (extract serializable data)
-        serialized = _serialize_results(results)
+        serialized = _serialize_pipeline_results(results)
         _results[execution_id] = serialized
 
         await manager.send_to_session(session_id, {
@@ -124,26 +119,22 @@ async def execute(request: ExecuteRequest):
         )
 
 
-def _serialize_results(results: dict[str, tuple]) -> dict[str, Any]:
-    """Convert execution results to JSON-serializable format."""
+def _serialize_pipeline_results(results: dict[str, Any]) -> dict[str, Any]:
+    """Convert pipeline results to JSON-serializable format."""
     serialized = {}
-    for node_id, outputs in results.items():
-        node_outputs = []
-        for output in outputs:
-            if isinstance(output, dict):
-                # Filter out non-serializable values
-                clean = {}
-                for k, v in output.items():
-                    if isinstance(v, (str, int, float, bool, list, type(None))):
-                        clean[k] = v
-                    elif isinstance(v, dict):
-                        clean[k] = v
-                node_outputs.append(clean)
-            elif isinstance(output, (str, int, float, bool, list, type(None))):
-                node_outputs.append(output)
-            else:
-                node_outputs.append(str(type(output).__name__))
-        serialized[node_id] = node_outputs
+    for key, value in results.items():
+        if isinstance(value, dict):
+            clean = {}
+            for k, v in value.items():
+                if isinstance(v, (str, int, float, bool, list, type(None))):
+                    clean[k] = v
+                elif isinstance(v, dict):
+                    clean[k] = v
+            serialized[key] = clean
+        elif isinstance(value, (str, int, float, bool, list, type(None))):
+            serialized[key] = value
+        else:
+            serialized[key] = str(type(value).__name__)
     return serialized
 
 
@@ -176,31 +167,39 @@ async def upload_csv(file: UploadFile = File(...)):
 
 @router.post("/graphs")
 async def save_graph(graph: SavedGraph):
-    """Save a named graph configuration."""
+    """Save a named graph configuration to disk."""
     if not graph.id:
         graph.id = str(uuid.uuid4())
-    _saved_graphs[graph.id] = graph
+    path = settings.graphs_dir / f"{graph.id}.json"
+    path.write_text(graph.model_dump_json(indent=2))
     return {"id": graph.id}
 
 
 @router.get("/graphs")
 async def list_graphs():
-    return {
-        gid: {"id": g.id, "name": g.name, "description": g.description}
-        for gid, g in _saved_graphs.items()
-    }
+    result = {}
+    for path in settings.graphs_dir.glob("*.json"):
+        try:
+            data = json.loads(path.read_text())
+            gid = data["id"]
+            result[gid] = {"id": gid, "name": data.get("name", ""), "description": data.get("description", "")}
+        except Exception:
+            continue
+    return result
 
 
 @router.get("/graphs/{graph_id}")
 async def get_graph(graph_id: str):
-    if graph_id not in _saved_graphs:
+    path = settings.graphs_dir / f"{graph_id}.json"
+    if not path.exists():
         raise HTTPException(status_code=404, detail="Graph not found")
-    return _saved_graphs[graph_id]
+    return json.loads(path.read_text())
 
 
 @router.delete("/graphs/{graph_id}")
 async def delete_graph(graph_id: str):
-    if graph_id not in _saved_graphs:
+    path = settings.graphs_dir / f"{graph_id}.json"
+    if not path.exists():
         raise HTTPException(status_code=404, detail="Graph not found")
-    del _saved_graphs[graph_id]
+    path.unlink()
     return {"status": "deleted"}

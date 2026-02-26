@@ -74,8 +74,8 @@ export function TrainingDashboard() {
                 contentStyle={{ background: '#1e1e2e', border: '1px solid #2a2a3e', fontSize: 11 }}
               />
               <Legend wrapperStyle={{ fontSize: 10 }} />
-              <Line type="monotone" dataKey="Train Loss" stroke="#3b82f6" dot={false} strokeWidth={2} />
-              <Line type="monotone" dataKey="Val Loss" stroke="#f59e0b" dot={false} strokeWidth={2} />
+              <Line type="monotone" dataKey="Train Loss" stroke="#3b82f6" dot={false} strokeWidth={2} isAnimationActive={false} />
+              <Line type="monotone" dataKey="Val Loss" stroke="#f59e0b" dot={false} strokeWidth={2} isAnimationActive={false} />
             </LineChart>
           </ResponsiveContainer>
         </div>
@@ -105,6 +105,7 @@ export function TrainingDashboard() {
                     stroke={colors[ri % colors.length]}
                     dot={false}
                     strokeWidth={2}
+                    isAnimationActive={false}
                   />,
                   <Line
                     key={`${run.name}-val`}
@@ -114,6 +115,7 @@ export function TrainingDashboard() {
                     dot={false}
                     strokeWidth={1}
                     strokeDasharray="5 5"
+                    isAnimationActive={false}
                   />,
                 ])}
               </LineChart>

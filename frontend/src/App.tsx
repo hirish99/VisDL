@@ -1,9 +1,7 @@
-import { useState } from 'react';
 import { Canvas } from './components/Canvas/Canvas';
 import { NodePalette } from './components/NodePalette/NodePalette';
-import { PropertiesPanel } from './components/PropertiesPanel/PropertiesPanel';
+import { ConfigPanel } from './components/ConfigPanel/ConfigPanel';
 import { TrainingDashboard } from './components/TrainingDashboard/TrainingDashboard';
-import { AblationPanel } from './components/AblationPanel/AblationPanel';
 import { Toolbar } from './components/Toolbar/Toolbar';
 import { useNodeRegistry } from './hooks/useNodeRegistry';
 import { useWebSocket } from './hooks/useWebSocket';
@@ -11,8 +9,6 @@ import { useWebSocket } from './hooks/useWebSocket';
 export default function App() {
   const definitions = useNodeRegistry();
   useWebSocket();
-
-  const [showAblation, setShowAblation] = useState(false);
 
   return (
     <div style={{
@@ -29,29 +25,8 @@ export default function App() {
           <Canvas />
           <TrainingDashboard />
         </div>
-        <PropertiesPanel />
-        {showAblation && <AblationPanel />}
+        <ConfigPanel />
       </div>
-      {/* Ablation toggle */}
-      <button
-        onClick={() => setShowAblation(!showAblation)}
-        style={{
-          position: 'fixed',
-          bottom: 12,
-          right: 12,
-          background: '#6366f1',
-          color: '#fff',
-          border: 'none',
-          borderRadius: 20,
-          padding: '6px 14px',
-          fontSize: 11,
-          cursor: 'pointer',
-          fontWeight: 600,
-          zIndex: 100,
-        }}
-      >
-        {showAblation ? 'Hide Ablation' : 'Ablation'}
-      </button>
     </div>
   );
 }

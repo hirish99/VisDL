@@ -7,10 +7,14 @@ import {
   type ReactFlowInstance,
   type Node,
   type Edge,
+  type Connection,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { useGraphStore, type NodeData } from '../../store/graphStore';
 import { buildNodeTypes } from '../NodeTypes';
+
+// Only LAYER_SPECS connections exist on canvas now
+const LAYER_TYPES = new Set(['LAYER_SPEC', 'LAYER_SPECS']);
 
 export function Canvas() {
   const nodes = useGraphStore((s) => s.nodes);
@@ -27,6 +31,40 @@ export function Canvas() {
     () => buildNodeTypes(Object.keys(definitions)),
     [definitions],
   );
+
+  const isValidConnection = useCallback((connection: Connection | Edge) => {
+    const { source, target, sourceHandle, targetHandle } = connection;
+
+    if (source === target) return false;
+    if (!source || !target || !sourceHandle || !targetHandle) return false;
+
+    const targetInputName = (targetHandle as string).replace('input_', '');
+    const targetNode = nodes.find((n) => n.id === target);
+    const sourceNode = nodes.find((n) => n.id === source);
+    if (!targetNode || !sourceNode) return false;
+
+    const targetDef = definitions[targetNode.data.nodeType];
+    const sourceDef = definitions[sourceNode.data.nodeType];
+    if (!targetDef || !sourceDef) return false;
+
+    const targetInput = targetDef.inputs[targetInputName];
+    if (!targetInput) return false;
+
+    // Only allow one connection per input (layer chain is linear)
+    const alreadyConnected = edges.some(
+      (e) => e.target === target && e.targetHandle === targetHandle,
+    );
+    if (alreadyConnected) return false;
+
+    // Only LAYER_SPECS connections on canvas
+    const outputIndex = parseInt((sourceHandle as string).replace('output_', ''));
+    const sourceOutput = sourceDef.outputs[outputIndex];
+    if (!sourceOutput) return false;
+
+    if (!LAYER_TYPES.has(sourceOutput.dtype) || !LAYER_TYPES.has(targetInput.dtype)) return false;
+
+    return true;
+  }, [nodes, edges, definitions]);
 
   const onDragOver = useCallback((event: React.DragEvent) => {
     event.preventDefault();
@@ -56,11 +94,13 @@ export function Canvas() {
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
+        isValidConnection={isValidConnection}
         onInit={(instance) => { rfInstance.current = instance; }}
         onDragOver={onDragOver}
         onDrop={onDrop}
         nodeTypes={nodeTypes}
         fitView
+        deleteKeyCode={['Backspace', 'Delete']}
         colorMode="dark"
         defaultEdgeOptions={{
           type: 'smoothstep',

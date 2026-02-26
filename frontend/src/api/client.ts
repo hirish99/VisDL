@@ -1,6 +1,6 @@
 import axios from 'axios';
 import type {
-  NodeDefinition, GraphSchema, ExecuteResponse,
+  NodeDefinition, GraphSchema, PipelineConfig, ExecuteResponse,
   UploadResponse, SavedGraphSummary,
 } from './types';
 
@@ -13,10 +13,12 @@ export async function fetchNodes(): Promise<Record<string, NodeDefinition>> {
 
 export async function executeGraph(
   graph: GraphSchema,
+  config: PipelineConfig,
   sessionId?: string,
 ): Promise<ExecuteResponse> {
   const { data } = await api.post('/execute', {
     graph,
+    config,
     session_id: sessionId,
   });
   return data;
@@ -36,12 +38,13 @@ export async function uploadCSV(file: File): Promise<UploadResponse> {
 
 export async function saveGraph(
   graph: GraphSchema,
+  config: PipelineConfig,
   id: string,
   name: string,
   description = '',
 ) {
   const { data } = await api.post('/graphs', {
-    id, name, description, graph,
+    id, name, description, graph, config,
   });
   return data;
 }
@@ -52,7 +55,7 @@ export async function listGraphs(): Promise<Record<string, SavedGraphSummary>> {
 }
 
 export async function loadGraph(graphId: string): Promise<{
-  id: string; name: string; description: string; graph: GraphSchema;
+  id: string; name: string; description: string; graph: GraphSchema; config?: PipelineConfig;
 }> {
   const { data } = await api.get(`/graphs/${graphId}`);
   return data;

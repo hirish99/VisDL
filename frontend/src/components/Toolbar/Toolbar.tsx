@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useGraphStore } from '../../store/graphStore';
+import { useConfigStore } from '../../store/configStore';
 import { useExecutionStore } from '../../store/executionStore';
 import { executeGraph, saveGraph, listGraphs, loadGraph } from '../../api/client';
 
@@ -7,6 +8,9 @@ export function Toolbar() {
   const toSchema = useGraphStore((s) => s.toGraphSchema);
   const loadFromSchema = useGraphStore((s) => s.loadFromSchema);
   const clearGraph = useGraphStore((s) => s.clearGraph);
+  const getConfig = useConfigStore((s) => s.getConfig);
+  const loadConfig = useConfigStore((s) => s.loadConfig);
+  const resetConfig = useConfigStore((s) => s.reset);
   const sessionId = useExecutionStore((s) => s.sessionId);
   const isRunning = useExecutionStore((s) => s.isRunning);
   const setRunning = useExecutionStore((s) => s.setRunning);
@@ -21,12 +25,25 @@ export function Toolbar() {
 
   const handleExecute = async () => {
     if (isRunning) return;
+    const config = getConfig();
+    if (!config.file_id) {
+      setErrors(['No CSV file uploaded. Upload a dataset in the Config panel.']);
+      return;
+    }
+    if (!config.input_columns) {
+      setErrors(['No input columns selected.']);
+      return;
+    }
+    if (!config.target_columns) {
+      setErrors(['No target columns selected.']);
+      return;
+    }
     setRunning(true);
     clearProgress();
     setErrors([]);
     const schema = toSchema();
     try {
-      const res = await executeGraph(schema, sessionId);
+      const res = await executeGraph(schema, config, sessionId);
       if (res.status === 'success') {
         setResults(res.results);
       } else {
@@ -42,7 +59,7 @@ export function Toolbar() {
   const handleSave = async () => {
     const schema = toSchema();
     schema.name = graphName;
-    await saveGraph(schema, '', graphName);
+    await saveGraph(schema, getConfig(), '', graphName);
     setSaveDialogOpen(false);
     setGraphName('');
   };
@@ -56,7 +73,15 @@ export function Toolbar() {
   const handleLoad = async (id: string) => {
     const data = await loadGraph(id);
     loadFromSchema(data.graph);
+    if (data.config) {
+      loadConfig(data.config);
+    }
     setLoadDialogOpen(false);
+  };
+
+  const handleClear = () => {
+    clearGraph();
+    resetConfig();
   };
 
   return (
@@ -82,7 +107,7 @@ export function Toolbar() {
 
       <button onClick={() => setSaveDialogOpen(true)} style={btnStyle}>Save</button>
       <button onClick={handleOpenLoad} style={btnStyle}>Load</button>
-      <button onClick={clearGraph} style={{ ...btnStyle, background: '#2a2a3e' }}>Clear</button>
+      <button onClick={handleClear} style={{ ...btnStyle, background: '#2a2a3e' }}>Clear</button>
 
       {/* Save dialog */}
       {saveDialogOpen && (

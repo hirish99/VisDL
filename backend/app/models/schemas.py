@@ -32,8 +32,30 @@ class GraphSchema(BaseModel):
     description: str = ""
 
 
+class PipelineConfig(BaseModel):
+    # Data
+    file_id: str
+    input_columns: str
+    target_columns: str
+    val_ratio: float = 0.2
+    batch_size: int = 32
+    shuffle: bool = True
+    # Training
+    loss_fn: str = "MSELoss"
+    optimizer: str = "Adam"
+    lr: float = 0.001
+    epochs: int = 10
+    # Export
+    export_name: str = ""
+    # Test data (optional)
+    test_file_id: str | None = None
+    test_input_columns: str | None = None
+    test_target_columns: str | None = None
+
+
 class ExecuteRequest(BaseModel):
     graph: GraphSchema
+    config: PipelineConfig
     session_id: str | None = None
 
 
@@ -58,6 +80,7 @@ class SavedGraph(BaseModel):
     name: str
     description: str = ""
     graph: GraphSchema
+    config: PipelineConfig | None = None
 
 
 class UploadResponse(BaseModel):

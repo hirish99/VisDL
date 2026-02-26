@@ -26,9 +26,7 @@ frontend/.vite/
 Thumbs.db
 
 # Project
-uploads/
-*.csv
-!sample_*.csv
+data/
 *.pt
 *.pth
 

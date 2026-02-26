@@ -24,11 +24,11 @@ class CSVLoaderNode(BaseNode):
             "file_id": InputSpec(dtype=DataType.STRING, required=True, is_handle=False),
             "input_columns": InputSpec(
                 dtype=DataType.STRING, required=True, is_handle=False,
-                default="",
+                default="x1,x2",
             ),
             "target_columns": InputSpec(
                 dtype=DataType.STRING, required=True, is_handle=False,
-                default="",
+                default="target",
             ),
         }
 

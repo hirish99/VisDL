@@ -22,10 +22,27 @@ export interface GraphSchema {
   description: string;
 }
 
+export interface PipelineConfig {
+  file_id: string;
+  input_columns: string;
+  target_columns: string;
+  val_ratio: number;
+  batch_size: number;
+  shuffle: boolean;
+  loss_fn: string;
+  optimizer: string;
+  lr: number;
+  epochs: number;
+  export_name: string;
+  test_file_id: string | null;
+  test_input_columns: string | null;
+  test_target_columns: string | null;
+}
+
 export interface ExecuteResponse {
   execution_id: string;
   status: string;
-  results: Record<string, unknown[]>;
+  results: Record<string, unknown>;
   errors: string[];
 }
 

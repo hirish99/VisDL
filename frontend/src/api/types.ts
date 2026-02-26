@@ -1,6 +1,6 @@
 export type { NodeDefinition, InputSpec, OutputSpec } from '../types/nodes';
 export type {
-  GraphNode, GraphEdge, GraphSchema,
+  GraphNode, GraphEdge, GraphSchema, PipelineConfig,
   ExecuteResponse, TrainingProgress,
 } from '../types/graph';
 

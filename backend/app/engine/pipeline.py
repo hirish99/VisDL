@@ -1,0 +1,194 @@
+"""Pipeline executor: orchestrates the fixed training pipeline using layer graph + config."""
+from typing import Any, Callable
+
+from ..nodes.registry import NodeRegistry
+from .executor import topological_sort
+from .graph import Graph
+
+
+ProgressCallback = Callable[[dict[str, Any]], None]
+
+
+def execute_pipeline(
+    layer_graph: Graph,
+    config: dict[str, Any],
+    progress_callback: ProgressCallback | None = None,
+) -> dict[str, Any]:
+    """Execute the full training pipeline.
+
+    1. Topo-sort layer nodes, execute chain → layer_specs list
+    2. CSVLoader → dataset
+    3. DataSplitter → train_loader, val_loader
+    4. ModelAssembly → model
+    5. Optimizer → optimizer
+    6. Loss → loss_fn
+    7. TrainingLoop → training_result
+    8. MetricsCollector → metrics
+    9. ModelExport → file_path
+    10. (Optional) Evaluator on test data
+    """
+    results: dict[str, Any] = {}
+
+    # --- 1. Execute layer graph to get layer_specs ---
+    order = topological_sort(layer_graph)
+    layer_results: dict[str, tuple] = {}
+
+    for node_id in order:
+        node_inst = layer_graph.nodes[node_id]
+        node_cls = NodeRegistry.get(node_inst.node_type)
+        node = node_cls()
+
+        kwargs: dict[str, Any] = {}
+        incoming = layer_graph.get_incoming_edges(node_id)
+
+        input_groups: dict[str, list] = {}
+        for edge in incoming:
+            src_results = layer_results.get(edge.source_node)
+            if src_results is None:
+                continue
+            value = src_results[edge.source_output]
+            if edge.target_input not in input_groups:
+                input_groups[edge.target_input] = []
+            input_groups[edge.target_input].append((edge.order, value))
+
+        for input_name, values in input_groups.items():
+            values.sort(key=lambda x: x[0])
+            if len(values) == 1:
+                kwargs[input_name] = values[0][1]
+            else:
+                kwargs[input_name] = [v for _, v in values]
+
+        for k, v in node_inst.params.items():
+            if k not in kwargs:
+                kwargs[k] = v
+
+        if node_inst.disabled:
+            outputs = node.on_disable(**kwargs)
+        else:
+            outputs = node.execute(**kwargs)
+
+        layer_results[node_id] = outputs
+
+        if progress_callback:
+            progress_callback({
+                "type": "node_complete",
+                "node_id": node_id,
+                "node_type": node_inst.node_type,
+            })
+
+    # Find the final layer node (the one with no outgoing edges in the layer graph)
+    all_sources = {e.source_node for e in layer_graph.edges}
+    all_targets = {e.target_node for e in layer_graph.edges}
+    terminal_nodes = [nid for nid in order if nid not in all_sources or nid not in all_targets]
+    # The last node in topo order that has no outgoing edges
+    terminal = None
+    for nid in reversed(order):
+        if nid not in all_sources:
+            terminal = nid
+            break
+    if terminal is None:
+        terminal = order[-1]
+
+    layer_specs = layer_results[terminal][0]
+
+    # --- 2. CSVLoader ---
+    csv_node = NodeRegistry.get("CSVLoader")()
+    dataset = csv_node.execute(
+        file_id=config["file_id"],
+        input_columns=config["input_columns"],
+        target_columns=config["target_columns"],
+    )[0]
+
+    if progress_callback:
+        progress_callback({"type": "node_complete", "node_id": "_csv", "node_type": "CSVLoader"})
+
+    # --- 3. DataSplitter ---
+    splitter_node = NodeRegistry.get("DataSplitter")()
+    train_loader, val_loader = splitter_node.execute(
+        dataset=dataset,
+        val_ratio=config.get("val_ratio", 0.2),
+        batch_size=config.get("batch_size", 32),
+        shuffle=config.get("shuffle", True),
+    )
+
+    if progress_callback:
+        progress_callback({"type": "node_complete", "node_id": "_split", "node_type": "DataSplitter"})
+
+    # --- 4. ModelAssembly ---
+    assembly_node = NodeRegistry.get("ModelAssembly")()
+    model = assembly_node.execute(
+        layer_specs=layer_specs,
+        dataset=dataset,
+    )[0]
+
+    if progress_callback:
+        progress_callback({"type": "node_complete", "node_id": "_model", "node_type": "ModelAssembly"})
+
+    # --- 5. Loss ---
+    loss_type = config.get("loss_fn", "MSELoss")
+    loss_node = NodeRegistry.get(loss_type)()
+    loss_fn = loss_node.execute()[0]
+
+    # --- 6. Optimizer ---
+    optim_type = config.get("optimizer", "Adam")
+    optim_node = NodeRegistry.get(optim_type)()
+    optimizer = optim_node.execute(
+        model=model,
+        lr=config.get("lr", 0.001),
+    )[0]
+
+    if progress_callback:
+        progress_callback({"type": "node_complete", "node_id": "_optim", "node_type": optim_type})
+
+    # --- 7. TrainingLoop ---
+    train_node = NodeRegistry.get("TrainingLoop")()
+    training_result = train_node.execute(
+        model=model,
+        optimizer=optimizer,
+        loss_fn=loss_fn,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        epochs=config.get("epochs", 10),
+        progress_callback=progress_callback,
+    )[0]
+
+    results["training"] = {
+        "history": training_result["history"],
+        "final_train_loss": training_result.get("final_train_loss"),
+        "final_val_loss": training_result.get("final_val_loss"),
+    }
+
+    # --- 8. MetricsCollector ---
+    metrics_node = NodeRegistry.get("MetricsCollector")()
+    metrics = metrics_node.execute(training_result=training_result)[0]
+    results["metrics"] = metrics
+
+    # --- 9. (Optional) Evaluator on test data ---
+    test_metrics = None
+    test_file_id = config.get("test_file_id")
+    if test_file_id:
+        test_csv_node = NodeRegistry.get("CSVLoader")()
+        test_dataset = test_csv_node.execute(
+            file_id=test_file_id,
+            input_columns=config.get("test_input_columns", config["input_columns"]),
+            target_columns=config.get("test_target_columns", config["target_columns"]),
+        )[0]
+
+        eval_node = NodeRegistry.get("Evaluator")()
+        test_metrics = eval_node.execute(
+            training_result=training_result,
+            test_dataset=test_dataset,
+        )[0]
+        results["test_metrics"] = test_metrics
+
+    # --- 10. ModelExport ---
+    export_name = config.get("export_name", "")
+    export_node = NodeRegistry.get("ModelExport")()
+    file_path = export_node.execute(
+        training_result=training_result,
+        test_metrics=test_metrics,
+        name=export_name,
+    )[0]
+    results["export_path"] = file_path
+
+    return results
