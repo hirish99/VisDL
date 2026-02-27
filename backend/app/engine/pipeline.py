@@ -20,10 +20,10 @@ def execute_pipeline(
 ) -> dict[str, Any]:
     """Execute the full training pipeline.
 
-    1. Topo-sort layer nodes, execute chain → layer_specs list
+    1. Topo-sort layer nodes, execute chain → ArchRef graph
     2. CSVLoader → dataset
     3. DataSplitter → train_loader, val_loader
-    4. ModelAssembly → model
+    4. GraphModel → model (compiles ArchRef DAG into nn.Module)
     5. Optimizer → optimizer
     6. Loss → loss_fn
     7. TrainingLoop → training_result
@@ -41,6 +41,7 @@ def execute_pipeline(
         node_inst = layer_graph.nodes[node_id]
         node_cls = NodeRegistry.get(node_inst.node_type)
         node = node_cls()
+        node._node_id = node_id
 
         kwargs: dict[str, Any] = {}
         incoming = layer_graph.get_incoming_edges(node_id)
@@ -93,7 +94,7 @@ def execute_pipeline(
     if terminal is None:
         terminal = order[-1]
 
-    layer_specs = layer_results[terminal][0]
+    arch_ref = layer_results[terminal][0]
 
     # --- 2. CSVLoader ---
     csv_node = NodeRegistry.get("CSVLoader")()
@@ -118,15 +119,16 @@ def execute_pipeline(
     if progress_callback:
         progress_callback({"type": "node_complete", "node_id": "_split", "node_type": "DataSplitter"})
 
-    # --- 4. ModelAssembly ---
-    assembly_node = NodeRegistry.get("ModelAssembly")()
-    model = assembly_node.execute(
-        layer_specs=layer_specs,
+    # --- 4. GraphModel ---
+    graph_model_node = NodeRegistry.get("GraphModel")()
+    graph_model_node._node_id = "_model"
+    model = graph_model_node.execute(
+        architecture=arch_ref,
         dataset=dataset,
     )[0]
 
     if progress_callback:
-        progress_callback({"type": "node_complete", "node_id": "_model", "node_type": "ModelAssembly"})
+        progress_callback({"type": "node_complete", "node_id": "_model", "node_type": "GraphModel"})
 
     # --- 5. Loss ---
     loss_type = config.get("loss_fn", "MSELoss")

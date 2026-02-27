@@ -3,6 +3,7 @@ import pytest
 
 from app.engine.executor import topological_sort, execute_graph
 from app.engine.graph import Edge, Graph, NodeInstance
+from app.engine.graph_module import ArchRef
 
 
 class TestTopologicalSort:
@@ -30,8 +31,8 @@ class TestTopologicalSort:
             "b": NodeInstance(id="b", node_type="ReLU"),
         }
         edges = [
-            Edge(id="e1", source_node="a", source_output=0, target_node="b", target_input="prev_specs"),
-            Edge(id="e2", source_node="b", source_output=0, target_node="a", target_input="prev_specs"),
+            Edge(id="e1", source_node="a", source_output=0, target_node="b", target_input="input"),
+            Edge(id="e2", source_node="b", source_output=0, target_node="a", target_input="input"),
         ]
         graph = Graph(nodes=nodes, edges=edges)
         with pytest.raises(RuntimeError, match="cycle"):
@@ -46,10 +47,10 @@ class TestTopologicalSort:
             "d": NodeInstance(id="d", node_type="Linear", params={"out_features": 1}),
         }
         edges = [
-            Edge(id="e1", source_node="a", source_output=0, target_node="b", target_input="prev_specs"),
-            Edge(id="e2", source_node="a", source_output=0, target_node="c", target_input="prev_specs"),
-            Edge(id="e3", source_node="b", source_output=0, target_node="d", target_input="prev_specs"),
-            Edge(id="e4", source_node="c", source_output=0, target_node="d", target_input="prev_specs", order=1),
+            Edge(id="e1", source_node="a", source_output=0, target_node="b", target_input="input"),
+            Edge(id="e2", source_node="a", source_output=0, target_node="c", target_input="input"),
+            Edge(id="e3", source_node="b", source_output=0, target_node="d", target_input="input"),
+            Edge(id="e4", source_node="c", source_output=0, target_node="d", target_input="input", order=1),
         ]
         graph = Graph(nodes=nodes, edges=edges)
         order = topological_sort(graph)
@@ -72,19 +73,21 @@ class TestExecuteGraph:
         assert "linear1" in results
         assert "relu" in results
         assert "linear2" in results
-        # Final output should be a list of layer specs
-        final_specs = results["linear2"][0]
-        assert isinstance(final_specs, list)
-        types = [s["type"] for s in final_specs]
-        assert types == ["Linear", "ReLU", "Linear"]
+        # Final output should be an ArchRef
+        final = results["linear2"][0]
+        assert isinstance(final, ArchRef)
+        assert final.node.module_type == "Linear"
 
     def test_disabled_node_calls_on_disable(self, simple_layer_graph):
-        """Disabling ReLU removes it from the spec chain."""
+        """Disabling ReLU: it vanishes from the ArchRef graph."""
         simple_layer_graph.nodes["relu"].disabled = True
         results = execute_graph(simple_layer_graph)
-        final_specs = results["linear2"][0]
-        types = [s["type"] for s in final_specs]
-        # ReLU was disabled, so it passed through prev_specs — no ReLU in chain
+        final = results["linear2"][0]
+        assert isinstance(final, ArchRef)
+        # Trace the graph to verify ReLU is gone
+        from app.engine.graph_module import trace_graph
+        nodes = trace_graph([final])
+        types = [n.module_type for n in nodes]
         assert "ReLU" not in types
         assert types == ["Linear", "Linear"]
 
@@ -92,8 +95,10 @@ class TestExecuteGraph:
         """Disabling a Linear node replaces it with Identity."""
         simple_layer_graph.nodes["linear1"].disabled = True
         results = execute_graph(simple_layer_graph)
-        final_specs = results["linear2"][0]
-        types = [s["type"] for s in final_specs]
+        final = results["linear2"][0]
+        from app.engine.graph_module import trace_graph
+        nodes = trace_graph([final])
+        types = [n.module_type for n in nodes]
         assert types == ["Identity", "ReLU", "Linear"]
 
     def test_all_disabled(self, simple_layer_graph):
@@ -101,8 +106,10 @@ class TestExecuteGraph:
         for node in simple_layer_graph.nodes.values():
             node.disabled = True
         results = execute_graph(simple_layer_graph)
-        final_specs = results["linear2"][0]
-        types = [s["type"] for s in final_specs]
+        final = results["linear2"][0]
+        from app.engine.graph_module import trace_graph
+        nodes = trace_graph([final])
+        types = [n.module_type for n in nodes]
         assert types == ["Identity", "Identity"]
 
     def test_progress_callback_invoked(self, simple_layer_graph):
@@ -123,5 +130,6 @@ class TestExecuteGraph:
             edges=[],
         )
         results = execute_graph(graph)
-        spec = results["linear1"][0][0]
-        assert spec["params"]["bias"] is False
+        ref = results["linear1"][0]
+        assert isinstance(ref, ArchRef)
+        assert ref.node.params["bias"] is False

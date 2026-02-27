@@ -19,6 +19,7 @@ class DataType(str, Enum):
     TRAINING_RESULT = "TRAINING_RESULT"
     LAYER_SPEC = "LAYER_SPEC"
     LAYER_SPECS = "LAYER_SPECS"
+    ARCH = "ARCH"
     ANY = "ANY"
 
 

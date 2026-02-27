@@ -12,7 +12,7 @@ class TestCycleDetection:
         graph = Graph(
             nodes={"a": NodeInstance(id="a", node_type="ReLU")},
             edges=[Edge(id="e1", source_node="a", source_output=0,
-                        target_node="a", target_input="prev_specs")],
+                        target_node="a", target_input="input")],
         )
         errors = validate_graph(graph)
         assert any("cycle" in e.lower() for e in errors)
@@ -25,9 +25,9 @@ class TestCycleDetection:
             },
             edges=[
                 Edge(id="e1", source_node="a", source_output=0,
-                     target_node="b", target_input="prev_specs"),
+                     target_node="b", target_input="input"),
                 Edge(id="e2", source_node="b", source_output=0,
-                     target_node="a", target_input="prev_specs"),
+                     target_node="a", target_input="input"),
             ],
         )
         errors = validate_graph(graph)
@@ -43,10 +43,10 @@ class TestCycleDetection:
                 "d": NodeInstance(id="d", node_type="Linear", params={"out_features": 1}),
             },
             edges=[
-                Edge(id="e1", source_node="a", source_output=0, target_node="b", target_input="prev_specs"),
-                Edge(id="e2", source_node="a", source_output=0, target_node="c", target_input="prev_specs"),
-                Edge(id="e3", source_node="b", source_output=0, target_node="d", target_input="prev_specs"),
-                Edge(id="e4", source_node="c", source_output=0, target_node="d", target_input="prev_specs", order=1),
+                Edge(id="e1", source_node="a", source_output=0, target_node="b", target_input="input"),
+                Edge(id="e2", source_node="a", source_output=0, target_node="c", target_input="input"),
+                Edge(id="e3", source_node="b", source_output=0, target_node="d", target_input="input"),
+                Edge(id="e4", source_node="c", source_output=0, target_node="d", target_input="input", order=1),
             ],
         )
         errors = validate_graph(graph)
@@ -62,7 +62,7 @@ class TestTypeChecking:
         graph = Graph(
             nodes={"b": NodeInstance(id="b", node_type="ReLU")},
             edges=[Edge(id="e1", source_node="missing", source_output=0,
-                        target_node="b", target_input="prev_specs")],
+                        target_node="b", target_input="input")],
         )
         errors = validate_graph(graph)
         assert any("missing node" in e.lower() for e in errors)
@@ -74,7 +74,7 @@ class TestTypeChecking:
                 "b": NodeInstance(id="b", node_type="ReLU"),
             },
             edges=[Edge(id="e1", source_node="a", source_output=99,
-                        target_node="b", target_input="prev_specs")],
+                        target_node="b", target_input="input")],
         )
         errors = validate_graph(graph)
         assert any("out of range" in e.lower() for e in errors)
@@ -96,7 +96,7 @@ class TestRequiredInputs:
     def test_required_input_connected(self, simple_layer_graph):
         errors = validate_graph(simple_layer_graph)
         # Linear.out_features is required but is_handle=False, so it's set via params
-        # prev_specs is not required (required=False)
+        # input is not required (required=False)
         assert not any("required input" in e.lower() for e in errors)
 
     def test_required_input_missing(self):

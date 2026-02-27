@@ -50,6 +50,7 @@ def execute_graph(
         node_inst = graph.nodes[node_id]
         node_cls = NodeRegistry.get(node_inst.node_type)
         node: BaseNode = node_cls()
+        node._node_id = node_id  # Available for ArchNode construction
 
         # Resolve inputs from edges
         kwargs: dict[str, Any] = {}

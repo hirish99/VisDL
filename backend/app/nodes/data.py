@@ -1,4 +1,5 @@
 """Data nodes: CSV loading and train/val splitting."""
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any
 
@@ -15,11 +16,42 @@ from ..config import settings
 _CHUNK_THRESHOLD_BYTES = 100 * 1024 * 1024  # 100 MB
 
 
+def _resolve_columns(specs: list[str], available: list[str]) -> list[str]:
+    """Expand column specs against available headers.
+
+    Each spec can be:
+      - An exact column name: ``x1``
+      - A glob pattern: ``s_*_g`` (matches via fnmatch)
+
+    Returns resolved column names in the order specs appear,
+    with glob matches sorted by their position in `available`.
+    Raises ValueError if a non-glob spec doesn't match any column.
+    """
+    resolved: list[str] = []
+    seen: set[str] = set()
+    for spec in specs:
+        if "*" in spec or "?" in spec or "[" in spec:
+            matches = [c for c in available if fnmatch(c, spec) and c not in seen]
+            if not matches:
+                raise ValueError(f"Column pattern '{spec}' matched no columns")
+            resolved.extend(matches)
+            seen.update(matches)
+        else:
+            if spec not in available:
+                raise ValueError(
+                    f"Column '{spec}' not found. Available: {available[:10]}{'...' if len(available) > 10 else ''}"
+                )
+            if spec not in seen:
+                resolved.append(spec)
+                seen.add(spec)
+    return resolved
+
+
 @NodeRegistry.register("CSVLoader")
 class CSVLoaderNode(BaseNode):
     CATEGORY = "Data"
     DISPLAY_NAME = "CSV Loader"
-    DESCRIPTION = "Load a CSV file and select input/target columns"
+    DESCRIPTION = "Load a CSV file and select input/target columns (supports glob patterns like s_*_g)"
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -45,13 +77,18 @@ class CSVLoaderNode(BaseNode):
         if not file_path.exists():
             raise FileNotFoundError(f"Uploaded file not found: {file_id}")
 
-        input_cols = [c.strip() for c in kwargs["input_columns"].split(",") if c.strip()]
-        target_cols = [c.strip() for c in kwargs["target_columns"].split(",") if c.strip()]
+        raw_input = [c.strip() for c in kwargs["input_columns"].split(",") if c.strip()]
+        raw_target = [c.strip() for c in kwargs["target_columns"].split(",") if c.strip()]
 
-        if not input_cols:
+        if not raw_input:
             raise ValueError("No input columns specified")
-        if not target_cols:
+        if not raw_target:
             raise ValueError("No target columns specified")
+
+        # Read header to resolve glob patterns
+        header = list(pd.read_csv(file_path, nrows=0).columns)
+        input_cols = _resolve_columns(raw_input, header)
+        target_cols = _resolve_columns(raw_target, header)
 
         file_size = file_path.stat().st_size
         if file_size < _CHUNK_THRESHOLD_BYTES:

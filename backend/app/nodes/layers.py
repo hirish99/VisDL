@@ -1,22 +1,19 @@
-"""Layer specification nodes: Linear, ReLU, Sigmoid, Tanh, Dropout, BatchNorm1d.
+"""Layer nodes: Linear, ReLU, GELU, Sigmoid, Tanh, Dropout, BatchNorm1d, LayerNorm.
 
-Each layer has an optional `prev_specs` input (chain from previous layer)
-and a `layer_specs` output (the chain so far including this layer).
-This lets you visually chain: Linear → ReLU → Linear → ModelAssembly.
+Each layer has an optional `input` handle (ARCH type from previous layer)
+and an `output` handle (ARCH type to next layer or GraphModel).
+This lets you visually chain: Linear → ReLU → Linear → GraphModel,
+or build DAGs with skip connections and parallel branches.
 """
-from typing import Any
-
 from .base import BaseNode, DataType, InputSpec, OutputSpec
 from .registry import NodeRegistry
+from ..engine.graph_module import ArchNode, ArchRef
 
 
-def _chain(prev: Any, spec: dict) -> list[dict]:
-    """Append spec to the chain from previous layers."""
-    if prev is None:
-        return [spec]
-    if isinstance(prev, list):
-        return prev + [spec]
-    return [prev, spec]
+def _make_arch(node_id: str, module_type: str, params: dict, upstream: ArchRef | None) -> ArchRef:
+    """Create an ArchNode and return an ArchRef to it."""
+    inputs = [upstream] if upstream else []
+    return ArchRef(ArchNode(node_id, module_type, params, inputs))
 
 
 @NodeRegistry.register("Linear")
@@ -28,8 +25,8 @@ class LinearNode(BaseNode):
     @classmethod
     def INPUT_TYPES(cls):
         return {
-            "prev_specs": InputSpec(
-                dtype=DataType.LAYER_SPECS, required=False, is_handle=True,
+            "input": InputSpec(
+                dtype=DataType.ARCH, required=False, is_handle=True,
             ),
             "in_features": InputSpec(
                 dtype=DataType.INT, default=None, required=False,
@@ -47,22 +44,18 @@ class LinearNode(BaseNode):
 
     @classmethod
     def RETURN_TYPES(cls):
-        return [OutputSpec(dtype=DataType.LAYER_SPECS, name="layer_specs")]
+        return [OutputSpec(dtype=DataType.ARCH, name="output")]
 
     def execute(self, **kwargs) -> tuple:
-        spec = {
-            "type": "Linear",
-            "params": {
-                "in_features": kwargs.get("in_features"),
-                "out_features": kwargs["out_features"],
-                "bias": kwargs.get("bias", True),
-            },
-        }
-        return (_chain(kwargs.get("prev_specs"), spec),)
+        return (_make_arch(self._node_id, "Linear", {
+            "in_features": kwargs.get("in_features"),
+            "out_features": kwargs["out_features"],
+            "bias": kwargs.get("bias", True),
+        }, kwargs.get("input")),)
 
     def on_disable(self, **kwargs) -> tuple:
-        prev = kwargs.get("prev_specs")
-        return (_chain(prev, {"type": "Identity", "params": {}}) if prev else [{"type": "Identity", "params": {}}],)
+        upstream = kwargs.get("input")
+        return (_make_arch(self._node_id, "Identity", {}, upstream),)
 
 
 @NodeRegistry.register("ReLU")
@@ -74,21 +67,47 @@ class ReLUNode(BaseNode):
     @classmethod
     def INPUT_TYPES(cls):
         return {
-            "prev_specs": InputSpec(
-                dtype=DataType.LAYER_SPECS, required=False, is_handle=True,
-            ),
+            "input": InputSpec(dtype=DataType.ARCH, required=False, is_handle=True),
         }
 
     @classmethod
     def RETURN_TYPES(cls):
-        return [OutputSpec(dtype=DataType.LAYER_SPECS, name="layer_specs")]
+        return [OutputSpec(dtype=DataType.ARCH, name="output")]
 
     def execute(self, **kwargs) -> tuple:
-        return (_chain(kwargs.get("prev_specs"), {"type": "ReLU", "params": {}}),)
+        return (_make_arch(self._node_id, "ReLU", {}, kwargs.get("input")),)
 
     def on_disable(self, **kwargs) -> tuple:
-        prev = kwargs.get("prev_specs")
-        return (prev if prev else [{"type": "Identity", "params": {}}],)
+        upstream = kwargs.get("input")
+        if upstream is not None:
+            return (upstream,)
+        return (_make_arch(self._node_id, "Identity", {}, None),)
+
+
+@NodeRegistry.register("GELU")
+class GELUNode(BaseNode):
+    CATEGORY = "Layers"
+    DISPLAY_NAME = "GELU"
+    DESCRIPTION = "GELU activation function"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "input": InputSpec(dtype=DataType.ARCH, required=False, is_handle=True),
+        }
+
+    @classmethod
+    def RETURN_TYPES(cls):
+        return [OutputSpec(dtype=DataType.ARCH, name="output")]
+
+    def execute(self, **kwargs) -> tuple:
+        return (_make_arch(self._node_id, "GELU", {}, kwargs.get("input")),)
+
+    def on_disable(self, **kwargs) -> tuple:
+        upstream = kwargs.get("input")
+        if upstream is not None:
+            return (upstream,)
+        return (_make_arch(self._node_id, "Identity", {}, None),)
 
 
 @NodeRegistry.register("Sigmoid")
@@ -100,21 +119,21 @@ class SigmoidNode(BaseNode):
     @classmethod
     def INPUT_TYPES(cls):
         return {
-            "prev_specs": InputSpec(
-                dtype=DataType.LAYER_SPECS, required=False, is_handle=True,
-            ),
+            "input": InputSpec(dtype=DataType.ARCH, required=False, is_handle=True),
         }
 
     @classmethod
     def RETURN_TYPES(cls):
-        return [OutputSpec(dtype=DataType.LAYER_SPECS, name="layer_specs")]
+        return [OutputSpec(dtype=DataType.ARCH, name="output")]
 
     def execute(self, **kwargs) -> tuple:
-        return (_chain(kwargs.get("prev_specs"), {"type": "Sigmoid", "params": {}}),)
+        return (_make_arch(self._node_id, "Sigmoid", {}, kwargs.get("input")),)
 
     def on_disable(self, **kwargs) -> tuple:
-        prev = kwargs.get("prev_specs")
-        return (prev if prev else [{"type": "Identity", "params": {}}],)
+        upstream = kwargs.get("input")
+        if upstream is not None:
+            return (upstream,)
+        return (_make_arch(self._node_id, "Identity", {}, None),)
 
 
 @NodeRegistry.register("Tanh")
@@ -126,21 +145,21 @@ class TanhNode(BaseNode):
     @classmethod
     def INPUT_TYPES(cls):
         return {
-            "prev_specs": InputSpec(
-                dtype=DataType.LAYER_SPECS, required=False, is_handle=True,
-            ),
+            "input": InputSpec(dtype=DataType.ARCH, required=False, is_handle=True),
         }
 
     @classmethod
     def RETURN_TYPES(cls):
-        return [OutputSpec(dtype=DataType.LAYER_SPECS, name="layer_specs")]
+        return [OutputSpec(dtype=DataType.ARCH, name="output")]
 
     def execute(self, **kwargs) -> tuple:
-        return (_chain(kwargs.get("prev_specs"), {"type": "Tanh", "params": {}}),)
+        return (_make_arch(self._node_id, "Tanh", {}, kwargs.get("input")),)
 
     def on_disable(self, **kwargs) -> tuple:
-        prev = kwargs.get("prev_specs")
-        return (prev if prev else [{"type": "Identity", "params": {}}],)
+        upstream = kwargs.get("input")
+        if upstream is not None:
+            return (upstream,)
+        return (_make_arch(self._node_id, "Identity", {}, None),)
 
 
 @NodeRegistry.register("Dropout")
@@ -152,9 +171,7 @@ class DropoutNode(BaseNode):
     @classmethod
     def INPUT_TYPES(cls):
         return {
-            "prev_specs": InputSpec(
-                dtype=DataType.LAYER_SPECS, required=False, is_handle=True,
-            ),
+            "input": InputSpec(dtype=DataType.ARCH, required=False, is_handle=True),
             "p": InputSpec(
                 dtype=DataType.FLOAT, default=0.5, required=False,
                 min_val=0.0, max_val=1.0, is_handle=False,
@@ -163,14 +180,18 @@ class DropoutNode(BaseNode):
 
     @classmethod
     def RETURN_TYPES(cls):
-        return [OutputSpec(dtype=DataType.LAYER_SPECS, name="layer_specs")]
+        return [OutputSpec(dtype=DataType.ARCH, name="output")]
 
     def execute(self, **kwargs) -> tuple:
-        return (_chain(kwargs.get("prev_specs"), {"type": "Dropout", "params": {"p": kwargs.get("p", 0.5)}}),)
+        return (_make_arch(self._node_id, "Dropout", {
+            "p": kwargs.get("p", 0.5),
+        }, kwargs.get("input")),)
 
     def on_disable(self, **kwargs) -> tuple:
-        prev = kwargs.get("prev_specs")
-        return (prev if prev else [{"type": "Identity", "params": {}}],)
+        upstream = kwargs.get("input")
+        if upstream is not None:
+            return (upstream,)
+        return (_make_arch(self._node_id, "Identity", {}, None),)
 
 
 @NodeRegistry.register("BatchNorm1d")
@@ -182,9 +203,7 @@ class BatchNorm1dNode(BaseNode):
     @classmethod
     def INPUT_TYPES(cls):
         return {
-            "prev_specs": InputSpec(
-                dtype=DataType.LAYER_SPECS, required=False, is_handle=True,
-            ),
+            "input": InputSpec(dtype=DataType.ARCH, required=False, is_handle=True),
             "num_features": InputSpec(
                 dtype=DataType.INT, default=None, required=False,
                 min_val=1, is_handle=False,
@@ -193,11 +212,43 @@ class BatchNorm1dNode(BaseNode):
 
     @classmethod
     def RETURN_TYPES(cls):
-        return [OutputSpec(dtype=DataType.LAYER_SPECS, name="layer_specs")]
+        return [OutputSpec(dtype=DataType.ARCH, name="output")]
 
     def execute(self, **kwargs) -> tuple:
-        return (_chain(kwargs.get("prev_specs"), {"type": "BatchNorm1d", "params": {"num_features": kwargs.get("num_features")}}),)
+        return (_make_arch(self._node_id, "BatchNorm1d", {
+            "num_features": kwargs.get("num_features"),
+        }, kwargs.get("input")),)
 
     def on_disable(self, **kwargs) -> tuple:
-        prev = kwargs.get("prev_specs")
-        return (prev if prev else [{"type": "Identity", "params": {}}],)
+        upstream = kwargs.get("input")
+        return (_make_arch(self._node_id, "Identity", {}, upstream),)
+
+
+@NodeRegistry.register("LayerNorm")
+class LayerNormNode(BaseNode):
+    CATEGORY = "Layers"
+    DISPLAY_NAME = "LayerNorm"
+    DESCRIPTION = "Layer normalization"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "input": InputSpec(dtype=DataType.ARCH, required=False, is_handle=True),
+            "normalized_shape": InputSpec(
+                dtype=DataType.INT, default=None, required=False,
+                min_val=1, is_handle=False,
+            ),
+        }
+
+    @classmethod
+    def RETURN_TYPES(cls):
+        return [OutputSpec(dtype=DataType.ARCH, name="output")]
+
+    def execute(self, **kwargs) -> tuple:
+        return (_make_arch(self._node_id, "LayerNorm", {
+            "normalized_shape": kwargs.get("normalized_shape"),
+        }, kwargs.get("input")),)
+
+    def on_disable(self, **kwargs) -> tuple:
+        upstream = kwargs.get("input")
+        return (_make_arch(self._node_id, "Identity", {}, upstream),)

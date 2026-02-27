@@ -1,231 +1,297 @@
-"""Tests for layer node on_disable (ablation) methods."""
+"""Tests for layer node on_disable (ablation) with ARCH-based system.
+
+Layer nodes now produce ArchRef objects. Ablation behavior:
+- Activations (ReLU, GELU, Sigmoid, Tanh) and Dropout: return upstream ArchRef
+  directly (node vanishes from architecture graph).
+- Linear, BatchNorm1d, LayerNorm: return ArchRef to Identity node.
+"""
+from app.engine.graph_module import ArchRef, ArchNode, trace_graph
 from app.nodes.layers import (
-    LinearNode, ReLUNode, SigmoidNode, TanhNode,
-    DropoutNode, BatchNorm1dNode, _chain,
+    LinearNode, ReLUNode, GELUNode, SigmoidNode, TanhNode,
+    DropoutNode, BatchNorm1dNode, LayerNormNode,
 )
 
 
-class TestChainHelper:
-    def test_chain_none_prev(self):
-        spec = {"type": "Linear", "params": {}}
-        result = _chain(None, spec)
-        assert result == [spec]
-
-    def test_chain_list_prev(self):
-        prev = [{"type": "Linear", "params": {}}]
-        spec = {"type": "ReLU", "params": {}}
-        result = _chain(prev, spec)
-        assert result == [{"type": "Linear", "params": {}}, {"type": "ReLU", "params": {}}]
-
-    def test_chain_single_dict_prev(self):
-        prev = {"type": "Linear", "params": {}}
-        spec = {"type": "ReLU", "params": {}}
-        result = _chain(prev, spec)
-        assert result == [prev, spec]
+def _collect_types(ref: ArchRef) -> list[str]:
+    """Trace ArchRef graph and return module types in topo (forward) order."""
+    nodes = trace_graph([ref])
+    return [n.module_type for n in nodes]
 
 
 class TestLinearNodeAblation:
-    def test_on_disable_no_prev(self):
-        node = LinearNode()
+    def test_execute_returns_arch_ref(self):
+        node = LinearNode(); node._node_id = "l1"
+        result = node.execute(out_features=64)
+        assert isinstance(result[0], ArchRef)
+        assert result[0].node.module_type == "Linear"
+        assert result[0].node.params["out_features"] == 64
+
+    def test_on_disable_no_upstream(self):
+        node = LinearNode(); node._node_id = "l1"
         result = node.on_disable()
-        assert result == ([{"type": "Identity", "params": {}}],)
+        assert isinstance(result[0], ArchRef)
+        assert result[0].node.module_type == "Identity"
 
-    def test_on_disable_with_prev(self):
-        node = LinearNode()
-        prev = [{"type": "Linear", "params": {"in_features": 4, "out_features": 8}}]
-        result = node.on_disable(prev_specs=prev)
-        specs = result[0]
-        assert len(specs) == 2
-        assert specs[0] == prev[0]
-        assert specs[1] == {"type": "Identity", "params": {}}
+    def test_on_disable_with_upstream(self):
+        upstream = LinearNode(); upstream._node_id = "l0"
+        upstream_ref = upstream.execute(in_features=4, out_features=8)[0]
 
-    def test_on_disable_with_prev_none_explicit(self):
-        node = LinearNode()
-        result = node.on_disable(prev_specs=None)
-        assert result == ([{"type": "Identity", "params": {}}],)
+        node = LinearNode(); node._node_id = "l1"
+        result = node.on_disable(input=upstream_ref)
+        assert result[0].node.module_type == "Identity"
+        assert result[0].node.inputs[0] is upstream_ref
 
     def test_execute_vs_disable(self):
-        """Executing produces Linear spec, disabling produces Identity."""
-        node = LinearNode()
+        node = LinearNode(); node._node_id = "l1"
         exec_result = node.execute(out_features=64)
         disable_result = node.on_disable()
-        assert exec_result[0][0]["type"] == "Linear"
-        assert disable_result[0][0]["type"] == "Identity"
+        assert exec_result[0].node.module_type == "Linear"
+        assert disable_result[0].node.module_type == "Identity"
 
 
 class TestReLUNodeAblation:
-    def test_on_disable_no_prev(self):
-        node = ReLUNode()
+    def test_on_disable_no_upstream(self):
+        node = ReLUNode(); node._node_id = "r1"
         result = node.on_disable()
-        assert result == ([{"type": "Identity", "params": {}}],)
+        assert isinstance(result[0], ArchRef)
+        assert result[0].node.module_type == "Identity"
 
-    def test_on_disable_passes_through_prev(self):
-        node = ReLUNode()
-        prev = [{"type": "Linear", "params": {"in_features": 4, "out_features": 8}}]
-        result = node.on_disable(prev_specs=prev)
-        assert result == (prev,)
-        # Key: activation on_disable does NOT insert Identity, it passes through
+    def test_on_disable_passes_through_upstream(self):
+        upstream = LinearNode(); upstream._node_id = "l0"
+        upstream_ref = upstream.execute(in_features=4, out_features=8)[0]
 
-    def test_on_disable_does_not_modify_chain(self):
-        """Disabling ReLU should remove it from the chain, not add Identity."""
-        node = ReLUNode()
-        prev = [
-            {"type": "Linear", "params": {"in_features": 4, "out_features": 8}},
-            {"type": "ReLU", "params": {}},
-        ]
-        result = node.on_disable(prev_specs=prev)
-        # Returns prev unchanged — ReLU is just omitted
-        assert result[0] == prev
+        node = ReLUNode(); node._node_id = "r1"
+        result = node.on_disable(input=upstream_ref)
+        assert result[0] is upstream_ref
+
+    def test_on_disable_vanishes_from_graph(self):
+        upstream = LinearNode(); upstream._node_id = "l0"
+        upstream_ref = upstream.execute(in_features=4, out_features=8)[0]
+
+        node = ReLUNode(); node._node_id = "r1"
+        result = node.on_disable(input=upstream_ref)
+        types = _collect_types(result[0])
+        assert types == ["Linear"]
 
 
 class TestSigmoidNodeAblation:
-    def test_on_disable_no_prev(self):
-        node = SigmoidNode()
+    def test_on_disable_no_upstream(self):
+        node = SigmoidNode(); node._node_id = "s1"
         result = node.on_disable()
-        assert result == ([{"type": "Identity", "params": {}}],)
+        assert result[0].node.module_type == "Identity"
 
     def test_on_disable_passes_through(self):
-        node = SigmoidNode()
-        prev = [{"type": "Linear", "params": {}}]
-        result = node.on_disable(prev_specs=prev)
-        assert result == (prev,)
+        upstream = LinearNode(); upstream._node_id = "l0"
+        upstream_ref = upstream.execute(in_features=4, out_features=8)[0]
+        node = SigmoidNode(); node._node_id = "s1"
+        result = node.on_disable(input=upstream_ref)
+        assert result[0] is upstream_ref
 
 
 class TestTanhNodeAblation:
-    def test_on_disable_no_prev(self):
-        node = TanhNode()
+    def test_on_disable_no_upstream(self):
+        node = TanhNode(); node._node_id = "t1"
         result = node.on_disable()
-        assert result == ([{"type": "Identity", "params": {}}],)
+        assert result[0].node.module_type == "Identity"
 
     def test_on_disable_passes_through(self):
-        node = TanhNode()
-        prev = [{"type": "Linear", "params": {}}]
-        result = node.on_disable(prev_specs=prev)
-        assert result == (prev,)
+        upstream = LinearNode(); upstream._node_id = "l0"
+        upstream_ref = upstream.execute(in_features=4, out_features=8)[0]
+        node = TanhNode(); node._node_id = "t1"
+        result = node.on_disable(input=upstream_ref)
+        assert result[0] is upstream_ref
 
 
 class TestDropoutNodeAblation:
-    def test_on_disable_no_prev(self):
-        node = DropoutNode()
+    def test_on_disable_no_upstream(self):
+        node = DropoutNode(); node._node_id = "d1"
         result = node.on_disable()
-        assert result == ([{"type": "Identity", "params": {}}],)
+        assert result[0].node.module_type == "Identity"
 
     def test_on_disable_passes_through(self):
-        node = DropoutNode()
-        prev = [{"type": "Linear", "params": {}}, {"type": "ReLU", "params": {}}]
-        result = node.on_disable(prev_specs=prev)
-        assert result == (prev,)
+        upstream = LinearNode(); upstream._node_id = "l0"
+        upstream_ref = upstream.execute(in_features=4, out_features=8)[0]
+        node = DropoutNode(); node._node_id = "d1"
+        result = node.on_disable(input=upstream_ref)
+        assert result[0] is upstream_ref
 
     def test_on_disable_ignores_p_param(self):
-        """Dropout's p parameter should be irrelevant when disabled."""
-        node = DropoutNode()
-        prev = [{"type": "Linear", "params": {}}]
-        result = node.on_disable(prev_specs=prev, p=0.9)
-        assert result == (prev,)
+        upstream = LinearNode(); upstream._node_id = "l0"
+        upstream_ref = upstream.execute(in_features=4, out_features=8)[0]
+        node = DropoutNode(); node._node_id = "d1"
+        result = node.on_disable(input=upstream_ref, p=0.9)
+        assert result[0] is upstream_ref
+
+
+class TestGELUNodeAblation:
+    def test_on_disable_no_upstream(self):
+        node = GELUNode(); node._node_id = "g1"
+        result = node.on_disable()
+        assert result[0].node.module_type == "Identity"
+
+    def test_on_disable_passes_through(self):
+        upstream = LinearNode(); upstream._node_id = "l0"
+        upstream_ref = upstream.execute(in_features=4, out_features=8)[0]
+        node = GELUNode(); node._node_id = "g1"
+        result = node.on_disable(input=upstream_ref)
+        assert result[0] is upstream_ref
+
+    def test_execute_produces_gelu(self):
+        node = GELUNode(); node._node_id = "g1"
+        result = node.execute()
+        assert result[0].node.module_type == "GELU"
+
+
+class TestLayerNormNodeAblation:
+    def test_on_disable_no_upstream(self):
+        node = LayerNormNode(); node._node_id = "ln1"
+        result = node.on_disable()
+        assert result[0].node.module_type == "Identity"
+
+    def test_on_disable_with_upstream(self):
+        upstream = LinearNode(); upstream._node_id = "l0"
+        upstream_ref = upstream.execute(in_features=4, out_features=8)[0]
+        node = LayerNormNode(); node._node_id = "ln1"
+        result = node.on_disable(input=upstream_ref)
+        assert result[0].node.module_type == "Identity"
+        assert result[0].node.inputs[0] is upstream_ref
+
+    def test_execute_produces_layernorm(self):
+        node = LayerNormNode(); node._node_id = "ln1"
+        result = node.execute(normalized_shape=64)
+        assert result[0].node.module_type == "LayerNorm"
+        assert result[0].node.params["normalized_shape"] == 64
+
+    def test_execute_normalized_shape_none(self):
+        node = LayerNormNode(); node._node_id = "ln1"
+        result = node.execute()
+        assert result[0].node.params["normalized_shape"] is None
 
 
 class TestBatchNorm1dNodeAblation:
-    def test_on_disable_no_prev(self):
-        node = BatchNorm1dNode()
+    def test_on_disable_no_upstream(self):
+        node = BatchNorm1dNode(); node._node_id = "bn1"
         result = node.on_disable()
-        assert result == ([{"type": "Identity", "params": {}}],)
+        assert result[0].node.module_type == "Identity"
 
-    def test_on_disable_passes_through(self):
-        node = BatchNorm1dNode()
-        prev = [{"type": "Linear", "params": {"in_features": 4, "out_features": 8}}]
-        result = node.on_disable(prev_specs=prev)
-        assert result == (prev,)
+    def test_on_disable_with_upstream(self):
+        upstream = LinearNode(); upstream._node_id = "l0"
+        upstream_ref = upstream.execute(in_features=4, out_features=8)[0]
+        node = BatchNorm1dNode(); node._node_id = "bn1"
+        result = node.on_disable(input=upstream_ref)
+        assert result[0].node.module_type == "Identity"
+        assert result[0].node.inputs[0] is upstream_ref
 
 
 class TestLayerAblationChaining:
-    """Test ablation behavior in multi-layer chains."""
+    """Test ablation behavior in multi-layer chains via ArchRef graph."""
 
     def test_disabled_middle_activation(self):
-        """Linear -> [disabled ReLU] -> Linear: ReLU just passes through."""
-        linear1 = LinearNode()
-        relu = ReLUNode()
-        linear2 = LinearNode()
+        """Linear -> [disabled ReLU] -> Linear: ReLU vanishes."""
+        l1 = LinearNode(); l1._node_id = "l1"
+        relu = ReLUNode(); relu._node_id = "relu"
+        l2 = LinearNode(); l2._node_id = "l2"
 
-        specs = linear1.execute(in_features=4, out_features=8)[0]
-        specs = relu.on_disable(prev_specs=specs)[0]  # disabled
-        specs = linear2.execute(prev_specs=specs, out_features=1)[0]
+        ref = l1.execute(in_features=4, out_features=8)[0]
+        ref = relu.on_disable(input=ref)[0]
+        ref = l2.execute(input=ref, out_features=1)[0]
 
-        assert len(specs) == 2
-        assert specs[0]["type"] == "Linear"
-        assert specs[1]["type"] == "Linear"
-        # No ReLU in chain
+        types = _collect_types(ref)
+        assert types == ["Linear", "Linear"]
 
     def test_disabled_first_linear(self):
         """[disabled Linear] -> ReLU -> Linear"""
-        linear1 = LinearNode()
-        relu = ReLUNode()
-        linear2 = LinearNode()
+        l1 = LinearNode(); l1._node_id = "l1"
+        relu = ReLUNode(); relu._node_id = "relu"
+        l2 = LinearNode(); l2._node_id = "l2"
 
-        specs = linear1.on_disable()[0]  # disabled, no prev
-        specs = relu.execute(prev_specs=specs)[0]
-        specs = linear2.execute(prev_specs=specs, out_features=1)[0]
+        ref = l1.on_disable()[0]
+        ref = relu.execute(input=ref)[0]
+        ref = l2.execute(input=ref, out_features=1)[0]
 
-        assert len(specs) == 3
-        assert specs[0]["type"] == "Identity"
-        assert specs[1]["type"] == "ReLU"
-        assert specs[2]["type"] == "Linear"
+        types = _collect_types(ref)
+        assert types == ["Identity", "ReLU", "Linear"]
 
     def test_disabled_last_linear(self):
         """Linear -> ReLU -> [disabled Linear]"""
-        linear1 = LinearNode()
-        relu = ReLUNode()
-        linear2 = LinearNode()
+        l1 = LinearNode(); l1._node_id = "l1"
+        relu = ReLUNode(); relu._node_id = "relu"
+        l2 = LinearNode(); l2._node_id = "l2"
 
-        specs = linear1.execute(in_features=4, out_features=8)[0]
-        specs = relu.execute(prev_specs=specs)[0]
-        specs = linear2.on_disable(prev_specs=specs)[0]  # disabled
+        ref = l1.execute(in_features=4, out_features=8)[0]
+        ref = relu.execute(input=ref)[0]
+        ref = l2.on_disable(input=ref)[0]
 
-        assert len(specs) == 3
-        assert specs[0]["type"] == "Linear"
-        assert specs[1]["type"] == "ReLU"
-        assert specs[2]["type"] == "Identity"
+        types = _collect_types(ref)
+        assert types == ["Linear", "ReLU", "Identity"]
 
     def test_all_layers_disabled(self):
         """[disabled Linear] -> [disabled ReLU] -> [disabled Linear]"""
-        linear1 = LinearNode()
-        relu = ReLUNode()
-        linear2 = LinearNode()
+        l1 = LinearNode(); l1._node_id = "l1"
+        relu = ReLUNode(); relu._node_id = "relu"
+        l2 = LinearNode(); l2._node_id = "l2"
 
-        specs = linear1.on_disable()[0]
-        specs = relu.on_disable(prev_specs=specs)[0]
-        specs = linear2.on_disable(prev_specs=specs)[0]
+        ref = l1.on_disable()[0]
+        ref = relu.on_disable(input=ref)[0]  # passes through Identity
+        ref = l2.on_disable(input=ref)[0]
 
-        # Linear1 -> Identity, ReLU passes through, Linear2 -> Identity
-        assert len(specs) == 2
-        assert specs[0]["type"] == "Identity"
-        assert specs[1]["type"] == "Identity"
+        types = _collect_types(ref)
+        assert types == ["Identity", "Identity"]
 
     def test_disabled_dropout_in_chain(self):
         """Linear -> [disabled Dropout] -> Linear"""
-        linear1 = LinearNode()
-        dropout = DropoutNode()
-        linear2 = LinearNode()
+        l1 = LinearNode(); l1._node_id = "l1"
+        dropout = DropoutNode(); dropout._node_id = "d1"
+        l2 = LinearNode(); l2._node_id = "l2"
 
-        specs = linear1.execute(in_features=4, out_features=8)[0]
-        specs = dropout.on_disable(prev_specs=specs)[0]  # disabled
-        specs = linear2.execute(prev_specs=specs, out_features=1)[0]
+        ref = l1.execute(in_features=4, out_features=8)[0]
+        ref = dropout.on_disable(input=ref)[0]
+        ref = l2.execute(input=ref, out_features=1)[0]
 
-        assert len(specs) == 2
-        assert specs[0]["type"] == "Linear"
-        assert specs[1]["type"] == "Linear"
-        # No Dropout in chain
+        types = _collect_types(ref)
+        assert types == ["Linear", "Linear"]
 
     def test_disabled_batchnorm_in_chain(self):
         """Linear -> [disabled BatchNorm] -> ReLU -> Linear"""
-        linear1 = LinearNode()
-        bn = BatchNorm1dNode()
-        relu = ReLUNode()
-        linear2 = LinearNode()
+        l1 = LinearNode(); l1._node_id = "l1"
+        bn = BatchNorm1dNode(); bn._node_id = "bn"
+        relu = ReLUNode(); relu._node_id = "relu"
+        l2 = LinearNode(); l2._node_id = "l2"
 
-        specs = linear1.execute(in_features=4, out_features=8)[0]
-        specs = bn.on_disable(prev_specs=specs)[0]  # disabled
-        specs = relu.execute(prev_specs=specs)[0]
-        specs = linear2.execute(prev_specs=specs, out_features=1)[0]
+        ref = l1.execute(in_features=4, out_features=8)[0]
+        ref = bn.on_disable(input=ref)[0]
+        ref = relu.execute(input=ref)[0]
+        ref = l2.execute(input=ref, out_features=1)[0]
 
-        types = [s["type"] for s in specs]
-        assert types == ["Linear", "ReLU", "Linear"]
+        types = _collect_types(ref)
+        # BatchNorm disabled → Identity, which is in the graph
+        assert types == ["Linear", "Identity", "ReLU", "Linear"]
+
+    def test_disabled_gelu_in_chain(self):
+        """Linear -> [disabled GELU] -> Linear: GELU omitted."""
+        l1 = LinearNode(); l1._node_id = "l1"
+        gelu = GELUNode(); gelu._node_id = "gelu"
+        l2 = LinearNode(); l2._node_id = "l2"
+
+        ref = l1.execute(in_features=4, out_features=8)[0]
+        ref = gelu.on_disable(input=ref)[0]
+        ref = l2.execute(input=ref, out_features=1)[0]
+
+        types = _collect_types(ref)
+        assert types == ["Linear", "Linear"]
+
+    def test_disabled_layernorm_in_chain(self):
+        """Linear -> [disabled LayerNorm] -> GELU -> Linear"""
+        l1 = LinearNode(); l1._node_id = "l1"
+        ln = LayerNormNode(); ln._node_id = "ln"
+        gelu = GELUNode(); gelu._node_id = "gelu"
+        l2 = LinearNode(); l2._node_id = "l2"
+
+        ref = l1.execute(in_features=4, out_features=8)[0]
+        ref = ln.on_disable(input=ref)[0]
+        ref = gelu.execute(input=ref)[0]
+        ref = l2.execute(input=ref, out_features=1)[0]
+
+        types = _collect_types(ref)
+        # LayerNorm disabled → Identity, which stays in graph
+        assert types == ["Linear", "Identity", "GELU", "Linear"]

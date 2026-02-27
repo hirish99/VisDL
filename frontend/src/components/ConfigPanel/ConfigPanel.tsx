@@ -80,7 +80,11 @@ function DataSection() {
 
         {config.availableColumns.length > 0 && (
           <>
-            <label style={labelStyle}>Input Columns</label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+              <label style={{ ...labelStyle, marginBottom: 0, marginTop: 0, flex: 1 }}>Input Columns</label>
+              <button onClick={() => config.setField('input_columns', config.availableColumns.join(','))} style={bulkBtnStyle}>All</button>
+              <button onClick={() => config.setField('input_columns', '')} style={bulkBtnStyle}>None</button>
+            </div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3, marginBottom: 6 }}>
               {config.availableColumns.map((col) => (
                 <button
@@ -98,7 +102,11 @@ function DataSection() {
               ))}
             </div>
 
-            <label style={labelStyle}>Target Columns</label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+              <label style={{ ...labelStyle, marginBottom: 0, marginTop: 0, flex: 1 }}>Target Columns</label>
+              <button onClick={() => config.setField('target_columns', config.availableColumns.join(','))} style={bulkBtnStyle}>All</button>
+              <button onClick={() => config.setField('target_columns', '')} style={bulkBtnStyle}>None</button>
+            </div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3, marginBottom: 6 }}>
               {config.availableColumns.map((col) => (
                 <button
@@ -269,7 +277,11 @@ function TestDataSection() {
 
           {config.testAvailableColumns.length > 0 && (
             <>
-              <label style={labelStyle}>Input Columns</label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+                <label style={{ ...labelStyle, marginBottom: 0, marginTop: 0, flex: 1 }}>Input Columns</label>
+                <button onClick={() => config.setField('test_input_columns', config.testAvailableColumns.join(','))} style={bulkBtnStyle}>All</button>
+                <button onClick={() => config.setField('test_input_columns', '')} style={bulkBtnStyle}>None</button>
+              </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3, marginBottom: 6 }}>
                 {config.testAvailableColumns.map((col) => (
                   <button
@@ -287,7 +299,11 @@ function TestDataSection() {
                 ))}
               </div>
 
-              <label style={labelStyle}>Target Columns</label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+                <label style={{ ...labelStyle, marginBottom: 0, marginTop: 0, flex: 1 }}>Target Columns</label>
+                <button onClick={() => config.setField('test_target_columns', config.testAvailableColumns.join(','))} style={bulkBtnStyle}>All</button>
+                <button onClick={() => config.setField('test_target_columns', '')} style={bulkBtnStyle}>None</button>
+              </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3, marginBottom: 6 }}>
                 {config.testAvailableColumns.map((col) => (
                   <button
@@ -460,6 +476,16 @@ const labelStyle: React.CSSProperties = {
   display: 'block',
   marginBottom: 2,
   marginTop: 4,
+};
+
+const bulkBtnStyle: React.CSSProperties = {
+  background: 'transparent',
+  border: '1px solid #2a2a3e',
+  borderRadius: 3,
+  color: '#808090',
+  fontSize: 9,
+  padding: '1px 6px',
+  cursor: 'pointer',
 };
 
 const inputStyle: React.CSSProperties = {

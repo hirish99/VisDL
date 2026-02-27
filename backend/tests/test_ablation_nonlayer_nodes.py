@@ -13,7 +13,7 @@ from app.nodes.losses import MSELossNode, CrossEntropyLossNode, L1LossNode
 from app.nodes.optimizers import SGDNode, AdamNode, AdamWNode
 from app.nodes.training import TrainingLoopNode
 from app.nodes.metrics import MetricsCollectorNode
-from app.nodes.model_assembly import ModelAssemblyNode
+from app.nodes.model_assembly import GraphModelNode
 
 
 class TestDataSplitterAblation:
@@ -104,14 +104,16 @@ class TestTrainingLoopAblation:
         assert isinstance(fake_result, dict) and "history" in fake_result
 
 
-class TestModelAssemblyAblation:
-    def test_on_disable_passes_through_specs(self):
-        """ModelAssembly.on_disable returns layer_specs (first input), not a model."""
-        specs = [{"type": "Linear", "params": {"in_features": 4, "out_features": 1}}]
-        node = ModelAssemblyNode()
-        result = node.on_disable(layer_specs=specs)
-        assert result == (specs,)
-        # This is layer_specs, not an nn.Module — downstream nodes expecting a model will fail
+class TestGraphModelAblation:
+    def test_on_disable_passes_through_architecture(self):
+        """GraphModel.on_disable returns architecture (first input), not a model."""
+        from app.engine.graph_module import ArchNode, ArchRef
+        arch_ref = ArchRef(ArchNode("l1", "Linear", {"in_features": 4, "out_features": 1}, []))
+        node = GraphModelNode()
+        node._node_id = "gm"
+        result = node.on_disable(architecture=arch_ref)
+        assert result == (arch_ref,)
+        # This is an ArchRef, not an nn.Module — downstream nodes expecting a model will fail
 
 
 class TestMetricsCollectorAblation:

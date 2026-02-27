@@ -19,6 +19,7 @@ function BaseNodeComponent({ id, data, selected }: NodeProps & { data: NodeData 
     Model: '#8b5cf6',
     Training: '#3b82f6',
     Metrics: '#06b6d4',
+    Structural: '#ec4899',
   };
   const color = categoryColors[definition.category] || '#6b7280';
 

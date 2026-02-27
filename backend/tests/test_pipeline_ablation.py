@@ -46,9 +46,9 @@ class TestPipelineWithAblation:
         }
         edges = [
             Edge(id="e1", source_node="linear1", source_output=0,
-                 target_node="relu", target_input="prev_specs"),
+                 target_node="relu", target_input="input"),
             Edge(id="e2", source_node="relu", source_output=0,
-                 target_node="linear2", target_input="prev_specs"),
+                 target_node="linear2", target_input="input"),
         ]
         graph = Graph(nodes=nodes, edges=edges)
         results = execute_pipeline(graph, pipeline_config)
@@ -73,9 +73,9 @@ class TestPipelineWithAblation:
         }
         edges = [
             Edge(id="e1", source_node="linear1", source_output=0,
-                 target_node="dropout", target_input="prev_specs"),
+                 target_node="dropout", target_input="input"),
             Edge(id="e2", source_node="dropout", source_output=0,
-                 target_node="linear2", target_input="prev_specs"),
+                 target_node="linear2", target_input="input"),
         ]
         graph = Graph(nodes=nodes, edges=edges)
         results = execute_pipeline(graph, pipeline_config)
@@ -97,9 +97,9 @@ class TestPipelineWithAblation:
         }
         edges = [
             Edge(id="e1", source_node="linear1", source_output=0,
-                 target_node="relu", target_input="prev_specs"),
+                 target_node="relu", target_input="input"),
             Edge(id="e2", source_node="relu", source_output=0,
-                 target_node="linear2", target_input="prev_specs"),
+                 target_node="linear2", target_input="input"),
         ]
         graph = Graph(nodes=nodes, edges=edges)
         results = execute_pipeline(graph, pipeline_config)
@@ -124,11 +124,11 @@ class TestPipelineWithAblation:
         }
         edges = [
             Edge(id="e1", source_node="linear1", source_output=0,
-                 target_node="bn", target_input="prev_specs"),
+                 target_node="bn", target_input="input"),
             Edge(id="e2", source_node="bn", source_output=0,
-                 target_node="relu", target_input="prev_specs"),
+                 target_node="relu", target_input="input"),
             Edge(id="e3", source_node="relu", source_output=0,
-                 target_node="linear2", target_input="prev_specs"),
+                 target_node="linear2", target_input="input"),
         ]
         graph = Graph(nodes=nodes, edges=edges)
         results = execute_pipeline(graph, pipeline_config)
@@ -150,6 +150,5 @@ class TestPipelineAblationComparison:
         # Results should differ (different model architecture)
         normal_loss = results_normal["training"]["final_train_loss"]
         ablated_loss = results_ablated["training"]["final_train_loss"]
-        # They could coincidentally be very close, but generally differ
         assert normal_loss is not None
         assert ablated_loss is not None

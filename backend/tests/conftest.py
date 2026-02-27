@@ -38,9 +38,9 @@ def simple_layer_graph():
     }
     edges = [
         Edge(id="e1", source_node="linear1", source_output=0,
-             target_node="relu", target_input="prev_specs"),
+             target_node="relu", target_input="input"),
         Edge(id="e2", source_node="relu", source_output=0,
-             target_node="linear2", target_input="prev_specs"),
+             target_node="linear2", target_input="input"),
     ]
     return Graph(nodes=nodes, edges=edges)
 

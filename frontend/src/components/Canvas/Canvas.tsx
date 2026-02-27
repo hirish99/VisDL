@@ -13,8 +13,13 @@ import '@xyflow/react/dist/style.css';
 import { useGraphStore, type NodeData } from '../../store/graphStore';
 import { buildNodeTypes } from '../NodeTypes';
 
-// Only LAYER_SPECS connections exist on canvas now
-const LAYER_TYPES = new Set(['LAYER_SPEC', 'LAYER_SPECS']);
+// Type compatibility for edge validation
+const isTypeCompatible = (srcDtype: string, tgtDtype: string): boolean => {
+  if (srcDtype === tgtDtype) return true;
+  if (srcDtype === 'ANY' || tgtDtype === 'ANY') return true;
+  if (srcDtype === 'LAYER_SPEC' && tgtDtype === 'LAYER_SPECS') return true;
+  return false;
+};
 
 export function Canvas() {
   const nodes = useGraphStore((s) => s.nodes);
@@ -61,7 +66,7 @@ export function Canvas() {
     const sourceOutput = sourceDef.outputs[outputIndex];
     if (!sourceOutput) return false;
 
-    if (!LAYER_TYPES.has(sourceOutput.dtype) || !LAYER_TYPES.has(targetInput.dtype)) return false;
+    if (!isTypeCompatible(sourceOutput.dtype, targetInput.dtype)) return false;
 
     return true;
   }, [nodes, edges, definitions]);
