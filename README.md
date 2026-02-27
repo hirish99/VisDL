@@ -96,17 +96,17 @@ Browser (React Flow)  <->  FastAPI Backend (Python)
 - **Frontend**: React, TypeScript, React Flow, Zustand, Recharts, Vite
 - **Communication**: REST for CRUD, WebSocket for real-time training telemetry and system monitoring
 
-## Node Types (17)
+## Node Types (19)
 
 | Category | Nodes |
 |----------|-------|
 | Data | CSV Loader, Data Splitter |
 | Layers | Linear, ReLU, Sigmoid, Tanh, Dropout, BatchNorm1d |
-| Model | Model Assembly |
+| Model | Model Assembly, Model Export |
 | Loss | MSE Loss, Cross Entropy Loss, L1 Loss |
 | Optimizer | SGD, Adam, AdamW |
 | Training | Training Loop |
-| Metrics | Metrics Collector |
+| Metrics | Metrics Collector, Evaluator |
 
 ## Adding New Nodes
 
