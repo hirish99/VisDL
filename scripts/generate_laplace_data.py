@@ -4,18 +4,23 @@
 Each sample: random smooth closed curve, random MFS sources inside,
 exact analytic solution evaluated on boundary sensors and exterior query points.
 
-Two output formats:
-  compact (default): boundary values + query coords + target (n_sensors + 3 columns)
+Three output formats:
+  simple (default):  query position + target (3 columns: x, y, u)
+                     Good for basic regression: learn u(x,y) directly.
+  compact:           boundary values + query coords + target (n_sensors + 3 columns)
                      Columns: s_0_g, s_1_g, ..., query_x, query_y, u
   full:              all sensor features + globals + query + target (n_sensors*8 + 7 columns)
                      Columns: s_0_x, s_0_y, s_0_g, ..., perimeter, area, ..., query_x, query_y, u
 
 Usage:
+    # Simple (position → potential, good starting point):
+    python scripts/generate_laplace_data.py --n_samples 1000
+
     # Compact (DeepONet-ready):
-    python scripts/generate_laplace_data.py --n_samples 1000 --n_sensors 64
+    python scripts/generate_laplace_data.py --n_samples 1000 --format compact --n_sensors 64
 
     # Full (all features):
-    python scripts/generate_laplace_data.py --n_samples 1000 --n_sensors 64 --format full
+    python scripts/generate_laplace_data.py --n_samples 1000 --format full --n_sensors 64
 """
 import argparse
 import csv
@@ -184,40 +189,39 @@ def sample_query_points(r0, alphas, betas, n_queries, rng):
 # Sample generation
 # ---------------------------------------------------------------------------
 
-def generate_sample(rng, n_sensors, n_queries, n_sources, difficulty, compact=True):
+def generate_sample(rng, n_sensors, n_queries, n_sources, difficulty, fmt="simple"):
     """Generate one training sample.
 
     Returns list of rows (one per query point).
-    compact=True:  boundary values g(sensor_i) + query coords + target
-    compact=False: all 8 sensor features + global features + query + target
+    fmt="simple":  query position (x,y) + target u
+    fmt="compact": boundary values g(sensor_i) + query coords + target
+    fmt="full":    all 8 sensor features + global features + query + target
     """
     r0, alphas, betas = random_star_curve(rng, difficulty)
-
-    # Boundary sensors (equally spaced in parameter)
-    t_sensors = np.linspace(0, TWO_PI, n_sensors, endpoint=False)
-    sx, sy = evaluate_curve(r0, alphas, betas, t_sensors)
-    dx_dt, dy_dt, kappa, nx, ny = curve_derivatives(r0, alphas, betas, t_sensors)
 
     # MFS sources and random strengths
     src_x, src_y = place_sources_inside(r0, alphas, betas, n_sources, rng)
     strengths = rng.normal(0, 1.0, n_sources)
 
-    # Boundary values at sensors
-    g_vals = evaluate_potential(sx, sy, src_x, src_y, strengths)
-
     # Query points in exterior
     qx, qy = sample_query_points(r0, alphas, betas, n_queries, rng)
     u_vals = evaluate_potential(qx, qy, src_x, src_y, strengths)
 
-    if compact:
-        # Only boundary values (branch net input) + query coords (trunk net input) + target
+    if fmt == "simple":
+        return [[qx[j], qy[j], u_vals[j]] for j in range(n_queries)]
+
+    # Boundary sensors (needed for compact/full)
+    t_sensors = np.linspace(0, TWO_PI, n_sensors, endpoint=False)
+    sx, sy = evaluate_curve(r0, alphas, betas, t_sensors)
+    dx_dt, dy_dt, kappa, nx, ny = curve_derivatives(r0, alphas, betas, t_sensors)
+    g_vals = evaluate_potential(sx, sy, src_x, src_y, strengths)
+
+    if fmt == "compact":
         sensor_feats = list(g_vals)
     else:
-        # Full sensor feature vectors: [x, y, g, dx, dy, kappa, nx, ny] per sensor
         sensor_feats = []
         for i in range(n_sensors):
             sensor_feats.extend([sx[i], sy[i], g_vals[i], dx_dt[i], dy_dt[i], kappa[i], nx[i], ny[i]])
-        # Global features
         perimeter, area, centroid_x, centroid_y = curve_geometry(r0, alphas, betas)
         sensor_feats.extend([perimeter, area, centroid_x, centroid_y])
 
@@ -229,14 +233,13 @@ def generate_sample(rng, n_sensors, n_queries, n_sources, difficulty, compact=Tr
     return rows
 
 
-def build_header(n_sensors, compact=True):
-    """Build CSV header row.
+def build_header(n_sensors, fmt="simple"):
+    """Build CSV header row."""
+    if fmt == "simple":
+        return ["x", "y", "u"]
 
-    compact=True:  s_0_g, s_1_g, ..., query_x, query_y, u
-    compact=False: s_0_x, s_0_y, s_0_g, ..., perimeter, ..., query_x, query_y, u
-    """
     cols = []
-    if compact:
+    if fmt == "compact":
         for i in range(n_sensors):
             cols.append(f"s_{i}_g")
     else:
@@ -257,24 +260,28 @@ def main():
     parser.add_argument("--n_queries", type=int, default=100, help="Exterior query points per sample")
     parser.add_argument("--n_sources", type=int, default=20, help="MFS source points per sample")
     parser.add_argument("--output", type=str, default="data/uploads/laplace_train.csv", help="Output CSV path")
-    parser.add_argument("--format", choices=["compact", "full"], default="compact",
-                        help="compact: boundary values + query + target (default). full: all 8 sensor features + globals.")
+    parser.add_argument("--format", choices=["simple", "compact", "full"], default="simple",
+                        help="simple: (x,y,u) position+potential (default). compact: boundary values + query + target. full: all sensor features.")
     parser.add_argument("--difficulty", choices=["easy", "medium", "hard"], default="medium")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
-    compact = args.format == "compact"
+    fmt = args.format
     rng = np.random.default_rng(args.seed)
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    header = build_header(args.n_sensors, compact=compact)
+    header = build_header(args.n_sensors, fmt=fmt)
     total_rows = args.n_samples * args.n_queries
 
     print(f"Generating {args.n_samples} samples x {args.n_queries} queries = {total_rows} rows")
     print(f"  sensors={args.n_sensors}, sources={args.n_sources}, difficulty={args.difficulty}")
-    fmt_desc = f"{args.n_sensors} boundary + 2 query + 1 target" if compact else f"{args.n_sensors}*8 sensor + 4 global + 2 query + 1 target"
-    print(f"  format: {args.format}, columns: {len(header)} ({fmt_desc})")
+    fmt_descs = {
+        "simple": "2 position + 1 target",
+        "compact": f"{args.n_sensors} boundary + 2 query + 1 target",
+        "full": f"{args.n_sensors}*8 sensor + 4 global + 2 query + 1 target",
+    }
+    print(f"  format: {fmt}, columns: {len(header)} ({fmt_descs[fmt]})")
     print(f"  output: {output_path}")
 
     with open(output_path, "w", newline="") as f:
@@ -282,7 +289,7 @@ def main():
         writer.writerow(header)
 
         for i in range(args.n_samples):
-            rows = generate_sample(rng, args.n_sensors, args.n_queries, args.n_sources, args.difficulty, compact=compact)
+            rows = generate_sample(rng, args.n_sensors, args.n_queries, args.n_sources, args.difficulty, fmt=fmt)
             writer.writerows(rows)
 
             if (i + 1) % max(1, args.n_samples // 10) == 0:
@@ -290,8 +297,11 @@ def main():
                 print(f"  [{pct:5.1f}%] {i + 1}/{args.n_samples} samples")
 
     print(f"Done. Wrote {total_rows} rows to {output_path}")
-    if compact:
-        print(f"\nVisDL config:")
+    print(f"\nVisDL config:")
+    if fmt == "simple":
+        print(f"  input_columns: x,y")
+        print(f"  target_columns: u")
+    elif fmt == "compact":
         print(f"  input_columns: s_*_g,query_x,query_y")
         print(f"  target_columns: u")
 

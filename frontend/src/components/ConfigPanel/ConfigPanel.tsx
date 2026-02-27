@@ -1,7 +1,7 @@
 import { useCallback, useState } from 'react';
 import { useConfigStore } from '../../store/configStore';
 import { useGraphStore, type NodeData } from '../../store/graphStore';
-import { uploadCSV } from '../../api/client';
+import { uploadCSV, estimateVram, type VramEstimate } from '../../api/client';
 import type { Node } from '@xyflow/react';
 
 export function ConfigPanel() {
@@ -33,8 +33,13 @@ export function ConfigPanel() {
 // --- Data Section ---
 function DataSection() {
   const config = useConfigStore();
+  const toSchema = useGraphStore((s) => s.toGraphSchema);
+  const optimizer = useConfigStore((s) => s.optimizer);
   const [uploading, setUploading] = useState(false);
   const [filename, setFilename] = useState('');
+  const [vramEstimate, setVramEstimate] = useState<VramEstimate | null>(null);
+  const [vramLoading, setVramLoading] = useState(false);
+  const [vramError, setVramError] = useState('');
 
   const handleUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -43,8 +48,10 @@ function DataSection() {
     try {
       const res = await uploadCSV(file);
       config.setField('file_id', res.file_id);
-      config.setField('input_columns', '');
-      config.setField('target_columns', '');
+      // Only clear columns if they weren't pre-set (e.g. from a loaded graph config).
+      // Glob patterns like "s_*_g" are resolved by the backend.
+      if (!config.input_columns) config.setField('input_columns', '');
+      if (!config.target_columns) config.setField('target_columns', '');
       config.setAvailableColumns(res.columns);
       setFilename(res.filename);
     } catch (err) {
@@ -54,13 +61,39 @@ function DataSection() {
     }
   }, [config]);
 
-  const selectedInputs = config.input_columns.split(',').filter(Boolean);
-  const selectedTargets = config.target_columns.split(',').filter(Boolean);
+  const selectedInputSpecs = config.input_columns.split(',').filter(Boolean);
+  const selectedTargetSpecs = config.target_columns.split(',').filter(Boolean);
 
-  const toggleColumn = (col: string, field: 'input_columns' | 'target_columns', current: string[]) => {
-    const next = current.includes(col)
-      ? current.filter((c) => c !== col)
-      : [...current, col];
+  // Expand glob patterns so toggle buttons reflect what the backend will match
+  const expandSpecs = (specs: string[], available: string[]) => {
+    const result = new Set<string>();
+    for (const spec of specs) {
+      if (spec.includes('*') || spec.includes('?') || spec.includes('[')) {
+        const re = new RegExp('^' + spec.replace(/[.+^${}()|\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$');
+        for (const col of available) {
+          if (re.test(col)) result.add(col);
+        }
+      } else {
+        result.add(spec);
+      }
+    }
+    return result;
+  };
+  const selectedInputs = expandSpecs(selectedInputSpecs, config.availableColumns);
+  const selectedTargets = expandSpecs(selectedTargetSpecs, config.availableColumns);
+
+  const toggleColumn = (col: string, field: 'input_columns' | 'target_columns', currentSpecs: string[]) => {
+    // When toggling, replace any glob patterns with the expanded exact column list
+    const available = config.availableColumns;
+    const expanded = expandSpecs(currentSpecs, available);
+    let next: string[];
+    if (expanded.has(col)) {
+      expanded.delete(col);
+      next = available.filter((c) => expanded.has(c));
+    } else {
+      expanded.add(col);
+      next = available.filter((c) => expanded.has(c));
+    }
     config.setField(field, next.join(','));
   };
 
@@ -89,11 +122,11 @@ function DataSection() {
               {config.availableColumns.map((col) => (
                 <button
                   key={`in_${col}`}
-                  onClick={() => toggleColumn(col, 'input_columns', selectedInputs)}
+                  onClick={() => toggleColumn(col, 'input_columns', selectedInputSpecs)}
                   style={{
-                    background: selectedInputs.includes(col) ? '#22c55e' : '#1a1a2e',
-                    color: selectedInputs.includes(col) ? '#fff' : '#808090',
-                    border: `1px solid ${selectedInputs.includes(col) ? '#22c55e' : '#2a2a3e'}`,
+                    background: selectedInputs.has(col) ? '#22c55e' : '#1a1a2e',
+                    color: selectedInputs.has(col) ? '#fff' : '#808090',
+                    border: `1px solid ${selectedInputs.has(col) ? '#22c55e' : '#2a2a3e'}`,
                     borderRadius: 3, padding: '2px 6px', fontSize: 9, cursor: 'pointer',
                   }}
                 >
@@ -111,11 +144,11 @@ function DataSection() {
               {config.availableColumns.map((col) => (
                 <button
                   key={`tgt_${col}`}
-                  onClick={() => toggleColumn(col, 'target_columns', selectedTargets)}
+                  onClick={() => toggleColumn(col, 'target_columns', selectedTargetSpecs)}
                   style={{
-                    background: selectedTargets.includes(col) ? '#ef4444' : '#1a1a2e',
-                    color: selectedTargets.includes(col) ? '#fff' : '#808090',
-                    border: `1px solid ${selectedTargets.includes(col) ? '#ef4444' : '#2a2a3e'}`,
+                    background: selectedTargets.has(col) ? '#ef4444' : '#1a1a2e',
+                    color: selectedTargets.has(col) ? '#fff' : '#808090',
+                    border: `1px solid ${selectedTargets.has(col) ? '#ef4444' : '#2a2a3e'}`,
                     borderRadius: 3, padding: '2px 6px', fontSize: 9, cursor: 'pointer',
                   }}
                 >
@@ -133,7 +166,8 @@ function DataSection() {
               type="number"
               value={config.val_ratio}
               min={0.01} max={0.99} step={0.05}
-              onChange={(e) => config.setField('val_ratio', parseFloat(e.target.value) || 0.2)}
+              onChange={(e) => { const v = e.target.valueAsNumber; if (!isNaN(v)) config.setField('val_ratio', v); }}
+              onBlur={(e) => { if (isNaN(e.target.valueAsNumber)) config.setField('val_ratio', 0.2); }}
               style={inputStyle}
             />
           </div>
@@ -143,7 +177,8 @@ function DataSection() {
               type="number"
               value={config.batch_size}
               min={1} step={1}
-              onChange={(e) => config.setField('batch_size', parseInt(e.target.value) || 32)}
+              onChange={(e) => { const v = e.target.valueAsNumber; if (!isNaN(v) && v >= 1) config.setField('batch_size', v); }}
+              onBlur={(e) => { if (isNaN(e.target.valueAsNumber)) config.setField('batch_size', 32); }}
               style={inputStyle}
             />
           </div>
@@ -157,6 +192,85 @@ function DataSection() {
           />
           Shuffle
         </label>
+
+        <button
+          onClick={async () => {
+            setVramLoading(true);
+            setVramError('');
+            setVramEstimate(null);
+            try {
+              const schema = toSchema();
+              if (schema.nodes.length === 0) {
+                setVramError('No nodes on canvas');
+                return;
+              }
+              const inputDim = selectedInputs.size || 1;
+              const est = await estimateVram(schema, inputDim, config.batch_size, optimizer);
+              setVramEstimate(est);
+            } catch (err: any) {
+              setVramError(err?.response?.data?.detail || err.message || 'Estimation failed');
+            } finally {
+              setVramLoading(false);
+            }
+          }}
+          disabled={vramLoading}
+          style={{
+            ...bulkBtnStyle,
+            width: '100%',
+            padding: '4px 8px',
+            marginTop: 6,
+            background: '#1a1a2e',
+            border: '1px solid #3b82f6',
+            color: '#3b82f6',
+          }}
+        >
+          {vramLoading ? 'Estimating...' : 'Check VRAM'}
+        </button>
+
+        {vramError && (
+          <div style={{ color: '#ef4444', fontSize: 9, marginTop: 3 }}>{vramError}</div>
+        )}
+
+        {vramEstimate && (
+          <div style={{
+            marginTop: 4,
+            padding: '6px 8px',
+            background: '#1a1a2e',
+            borderRadius: 4,
+            border: `1px solid ${
+              vramEstimate.fits === false ? '#ef4444'
+                : vramEstimate.available_mb && vramEstimate.total_mb > vramEstimate.available_mb * 0.5 ? '#f59e0b'
+                : '#22c55e'
+            }`,
+            fontSize: 10,
+          }}>
+            <div style={{
+              color: vramEstimate.fits === false ? '#ef4444' : '#22c55e',
+              fontWeight: 600,
+              marginBottom: 3,
+            }}>
+              ~{(vramEstimate.total_mb / 1024).toFixed(3)} GB
+              {vramEstimate.available_mb != null && (
+                <span style={{ color: '#808090', fontWeight: 400 }}>
+                  {' '}/ {(vramEstimate.available_mb / 1024).toFixed(0)} GB
+                </span>
+              )}
+            </div>
+            <div style={{ color: '#808090', lineHeight: 1.6 }}>
+              {vramEstimate.param_count.toLocaleString()} params
+              <br />
+              Weights: {(vramEstimate.params_mb / 1024).toFixed(4)} GB
+              <br />
+              Gradients: {(vramEstimate.gradients_mb / 1024).toFixed(4)} GB
+              <br />
+              Optimizer: {(vramEstimate.optimizer_mb / 1024).toFixed(4)} GB
+              <br />
+              Activations: {(vramEstimate.activations_mb / 1024).toFixed(4)} GB
+              <br />
+              Batch data: {(vramEstimate.batch_data_mb / 1024).toFixed(4)} GB
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -199,7 +313,8 @@ function TrainingSection() {
               type="number"
               value={config.lr}
               min={1e-8} max={10} step={0.001}
-              onChange={(e) => config.setField('lr', parseFloat(e.target.value) || 0.001)}
+              onChange={(e) => { const v = e.target.valueAsNumber; if (!isNaN(v)) config.setField('lr', v); }}
+              onBlur={(e) => { if (isNaN(e.target.valueAsNumber)) config.setField('lr', 0.001); }}
               style={inputStyle}
             />
           </div>
@@ -209,7 +324,8 @@ function TrainingSection() {
               type="number"
               value={config.epochs}
               min={1} max={10000} step={1}
-              onChange={(e) => config.setField('epochs', parseInt(e.target.value) || 10)}
+              onChange={(e) => { const v = e.target.valueAsNumber; if (!isNaN(v) && v >= 1) config.setField('epochs', v); }}
+              onBlur={(e) => { if (isNaN(e.target.valueAsNumber)) config.setField('epochs', 10); }}
               style={inputStyle}
             />
           </div>
@@ -233,8 +349,8 @@ function TestDataSection() {
     try {
       const res = await uploadCSV(file);
       config.setField('test_file_id', res.file_id);
-      config.setField('test_input_columns', '');
-      config.setField('test_target_columns', '');
+      if (!config.test_input_columns) config.setField('test_input_columns', '');
+      if (!config.test_target_columns) config.setField('test_target_columns', '');
       config.setTestAvailableColumns(res.columns);
       setFilename(res.filename);
     } catch (err) {
@@ -244,13 +360,37 @@ function TestDataSection() {
     }
   }, [config]);
 
-  const selectedInputs = (config.test_input_columns || '').split(',').filter(Boolean);
-  const selectedTargets = (config.test_target_columns || '').split(',').filter(Boolean);
+  const selectedInputSpecs = (config.test_input_columns || '').split(',').filter(Boolean);
+  const selectedTargetSpecs = (config.test_target_columns || '').split(',').filter(Boolean);
 
-  const toggleColumn = (col: string, field: 'test_input_columns' | 'test_target_columns', current: string[]) => {
-    const next = current.includes(col)
-      ? current.filter((c) => c !== col)
-      : [...current, col];
+  const expandSpecs = (specs: string[], available: string[]) => {
+    const result = new Set<string>();
+    for (const spec of specs) {
+      if (spec.includes('*') || spec.includes('?') || spec.includes('[')) {
+        const re = new RegExp('^' + spec.replace(/[.+^${}()|\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$');
+        for (const col of available) {
+          if (re.test(col)) result.add(col);
+        }
+      } else {
+        result.add(spec);
+      }
+    }
+    return result;
+  };
+  const selectedInputs = expandSpecs(selectedInputSpecs, config.testAvailableColumns);
+  const selectedTargets = expandSpecs(selectedTargetSpecs, config.testAvailableColumns);
+
+  const toggleColumn = (col: string, field: 'test_input_columns' | 'test_target_columns', currentSpecs: string[]) => {
+    const available = config.testAvailableColumns;
+    const expanded = expandSpecs(currentSpecs, available);
+    let next: string[];
+    if (expanded.has(col)) {
+      expanded.delete(col);
+      next = available.filter((c) => expanded.has(c));
+    } else {
+      expanded.add(col);
+      next = available.filter((c) => expanded.has(c));
+    }
     config.setField(field, next.join(','));
   };
 
@@ -286,11 +426,11 @@ function TestDataSection() {
                 {config.testAvailableColumns.map((col) => (
                   <button
                     key={`tin_${col}`}
-                    onClick={() => toggleColumn(col, 'test_input_columns', selectedInputs)}
+                    onClick={() => toggleColumn(col, 'test_input_columns', selectedInputSpecs)}
                     style={{
-                      background: selectedInputs.includes(col) ? '#22c55e' : '#1a1a2e',
-                      color: selectedInputs.includes(col) ? '#fff' : '#808090',
-                      border: `1px solid ${selectedInputs.includes(col) ? '#22c55e' : '#2a2a3e'}`,
+                      background: selectedInputs.has(col) ? '#22c55e' : '#1a1a2e',
+                      color: selectedInputs.has(col) ? '#fff' : '#808090',
+                      border: `1px solid ${selectedInputs.has(col) ? '#22c55e' : '#2a2a3e'}`,
                       borderRadius: 3, padding: '2px 6px', fontSize: 9, cursor: 'pointer',
                     }}
                   >
@@ -308,11 +448,11 @@ function TestDataSection() {
                 {config.testAvailableColumns.map((col) => (
                   <button
                     key={`ttgt_${col}`}
-                    onClick={() => toggleColumn(col, 'test_target_columns', selectedTargets)}
+                    onClick={() => toggleColumn(col, 'test_target_columns', selectedTargetSpecs)}
                     style={{
-                      background: selectedTargets.includes(col) ? '#ef4444' : '#1a1a2e',
-                      color: selectedTargets.includes(col) ? '#fff' : '#808090',
-                      border: `1px solid ${selectedTargets.includes(col) ? '#ef4444' : '#2a2a3e'}`,
+                      background: selectedTargets.has(col) ? '#ef4444' : '#1a1a2e',
+                      color: selectedTargets.has(col) ? '#fff' : '#808090',
+                      border: `1px solid ${selectedTargets.has(col) ? '#ef4444' : '#2a2a3e'}`,
                       borderRadius: 3, padding: '2px 6px', fontSize: 9, cursor: 'pointer',
                     }}
                   >

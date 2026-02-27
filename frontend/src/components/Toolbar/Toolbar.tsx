@@ -48,16 +48,10 @@ export function Toolbar() {
     try {
       const res = await executeGraph(schema, config, sessionId);
       setExecutionId(res.execution_id);
-      if (res.status === 'success') {
-        setResults(res.results);
-      } else {
-        setErrors(res.errors);
-      }
+      // Training runs in background; WebSocket handles completion/errors.
     } catch (err: any) {
       setErrors([err.message || 'Execution failed']);
-    } finally {
       setRunning(false);
-      setExecutionId(null);
     }
   };
 

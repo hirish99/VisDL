@@ -1,4 +1,6 @@
 """Training loop node with progress callback and pause/resume/stop support."""
+import gc
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -62,9 +64,16 @@ class TrainingLoopNode(BaseNode):
         start_epoch = 0
         stopped_early = False
 
+        # Throughput tracking
+        total_train_samples = len(train_loader.dataset)
+        total_samples = total_train_samples * epochs
+        t_start = time.monotonic()
+        cumulative_samples = start_epoch * total_train_samples
+
         # Resume from checkpoint if it exists
         if checkpoint_path and Path(checkpoint_path).exists():
             start_epoch, history = load_checkpoint(Path(checkpoint_path), model, optimizer)
+            cumulative_samples = start_epoch * total_train_samples
 
         for epoch in range(start_epoch, epochs):
             # Check control signal before each epoch
@@ -111,6 +120,10 @@ class TrainingLoopNode(BaseNode):
 
             history["val_loss"].append(avg_val_loss)
 
+            cumulative_samples += total_train_samples
+            elapsed = time.monotonic() - t_start
+            throughput = cumulative_samples / elapsed if elapsed > 0 else 0
+
             if progress_cb:
                 progress_cb({
                     "type": "training_progress",
@@ -118,6 +131,9 @@ class TrainingLoopNode(BaseNode):
                     "total_epochs": epochs,
                     "train_loss": avg_train_loss,
                     "val_loss": avg_val_loss,
+                    "samples_trained": cumulative_samples,
+                    "total_samples": total_samples,
+                    "throughput": round(throughput, 1),
                 })
 
             # Check if paused after epoch — save checkpoint so state is preserved
@@ -132,6 +148,11 @@ class TrainingLoopNode(BaseNode):
                     break
                 if progress_cb:
                     progress_cb({"type": "training_resumed", "epoch": epoch + 1})
+
+        # Move model to CPU to free GPU memory for subsequent operations
+        model.cpu()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         return ({
             "model": model,

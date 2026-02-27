@@ -76,3 +76,30 @@ export async function resumeTraining(executionId: string) {
 export async function stopTraining(executionId: string) {
   await api.post(`/execute/${executionId}/stop`);
 }
+
+export interface VramEstimate {
+  param_count: number;
+  params_mb: number;
+  gradients_mb: number;
+  optimizer_mb: number;
+  activations_mb: number;
+  batch_data_mb: number;
+  total_mb: number;
+  available_mb: number | null;
+  fits: boolean | null;
+}
+
+export async function estimateVram(
+  graph: GraphSchema,
+  inputDim: number,
+  batchSize: number,
+  optimizer: string,
+): Promise<VramEstimate> {
+  const { data } = await api.post('/estimate-vram', {
+    graph,
+    input_dim: inputDim,
+    batch_size: batchSize,
+    optimizer,
+  });
+  return data;
+}

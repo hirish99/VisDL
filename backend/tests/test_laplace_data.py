@@ -136,9 +136,16 @@ class TestMFS:
 
 
 class TestSampleGeneration:
+    def test_generate_sample_simple(self, rng):
+        n_sensors, n_queries, n_sources = 8, 5, 10
+        rows = generate_sample(rng, n_sensors, n_queries, n_sources, "medium", fmt="simple")
+        assert len(rows) == n_queries
+        for row in rows:
+            assert len(row) == 3  # x, y, u
+
     def test_generate_sample_compact(self, rng):
         n_sensors, n_queries, n_sources = 8, 5, 10
-        rows = generate_sample(rng, n_sensors, n_queries, n_sources, "medium", compact=True)
+        rows = generate_sample(rng, n_sensors, n_queries, n_sources, "medium", fmt="compact")
         assert len(rows) == n_queries
         expected_cols = n_sensors + 2 + 1  # boundary_values + query + target
         for row in rows:
@@ -146,7 +153,7 @@ class TestSampleGeneration:
 
     def test_generate_sample_full(self, rng):
         n_sensors, n_queries, n_sources = 8, 5, 10
-        rows = generate_sample(rng, n_sensors, n_queries, n_sources, "medium", compact=False)
+        rows = generate_sample(rng, n_sensors, n_queries, n_sources, "medium", fmt="full")
         assert len(rows) == n_queries
         expected_cols = n_sensors * 8 + 4 + 2 + 1  # sensor*8 + global + query + target
         for row in rows:
@@ -157,15 +164,19 @@ class TestSampleGeneration:
         for row in rows:
             assert not any(np.isnan(v) for v in row)
 
+    def test_build_header_simple(self):
+        header = build_header(4, fmt="simple")
+        assert header == ["x", "y", "u"]
+
     def test_build_header_compact(self):
-        header = build_header(4, compact=True)
+        header = build_header(4, fmt="compact")
         assert len(header) == 4 + 2 + 1  # 7
         assert header[0] == "s_0_g"
         assert header[-1] == "u"
         assert "query_x" in header
 
     def test_build_header_full(self):
-        header = build_header(4, compact=False)
+        header = build_header(4, fmt="full")
         assert len(header) == 4 * 8 + 4 + 2 + 1  # 39
         assert header[0] == "s_0_x"
         assert header[-1] == "u"
@@ -175,13 +186,13 @@ class TestSampleGeneration:
 
 class TestCLI:
     @pytest.mark.slow
-    def test_cli_generates_csv_compact(self, tmp_path):
+    def test_cli_generates_csv_simple(self, tmp_path):
+        """Default format is simple: x, y, u."""
         output = tmp_path / "test_laplace.csv"
         result = subprocess.run(
             [
                 sys.executable, str(Path(__file__).resolve().parents[2] / "scripts" / "generate_laplace_data.py"),
                 "--n_samples", "3",
-                "--n_sensors", "4",
                 "--n_queries", "2",
                 "--n_sources", "5",
                 "--output", str(output),
@@ -195,9 +206,35 @@ class TestCLI:
         with open(output) as f:
             reader = csv.reader(f)
             header = next(reader)
-            assert len(header) == 4 + 2 + 1  # compact default
+            assert header == ["x", "y", "u"]
             rows = list(reader)
             assert len(rows) == 3 * 2  # n_samples * n_queries
+
+    @pytest.mark.slow
+    def test_cli_generates_csv_compact(self, tmp_path):
+        output = tmp_path / "test_laplace_compact.csv"
+        result = subprocess.run(
+            [
+                sys.executable, str(Path(__file__).resolve().parents[2] / "scripts" / "generate_laplace_data.py"),
+                "--n_samples", "3",
+                "--n_sensors", "4",
+                "--n_queries", "2",
+                "--n_sources", "5",
+                "--format", "compact",
+                "--output", str(output),
+                "--seed", "99",
+            ],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, f"CLI failed: {result.stderr}"
+        assert output.exists()
+
+        with open(output) as f:
+            reader = csv.reader(f)
+            header = next(reader)
+            assert len(header) == 4 + 2 + 1  # compact
+            rows = list(reader)
+            assert len(rows) == 3 * 2
 
     @pytest.mark.slow
     def test_cli_generates_csv_full(self, tmp_path):

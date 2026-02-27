@@ -1,6 +1,9 @@
 """Pipeline executor: orchestrates the fixed training pipeline using layer graph + config."""
+import gc
 from pathlib import Path
 from typing import Any, Callable
+
+import torch
 
 from ..nodes.registry import NodeRegistry
 from .executor import topological_sort
@@ -199,5 +202,11 @@ def execute_pipeline(
         name=export_name,
     )[0]
     results["export_path"] = file_path
+
+    # Cleanup: free GPU memory
+    del model, optimizer, loss_fn, train_loader, val_loader, dataset
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     return results

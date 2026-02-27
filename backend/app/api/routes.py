@@ -1,5 +1,6 @@
 """REST API routes."""
 import asyncio
+import gc
 import json
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -18,6 +19,7 @@ from ..engine.validator import validate_graph
 from ..models.schemas import (
     ExecuteRequest, ExecuteResponse, GraphSchema,
     SavedGraph, UploadResponse,
+    VramEstimateRequest, VramEstimateResponse,
 )
 from ..engine.session import create_session, get_session, remove_session
 from ..nodes.registry import NodeRegistry
@@ -26,7 +28,8 @@ from .websocket import manager
 router = APIRouter(prefix="/api")
 executor_pool = ThreadPoolExecutor(max_workers=4)
 
-# In-memory stores
+# In-memory stores (capped at _MAX_RESULTS to prevent unbounded growth)
+_MAX_RESULTS = 20
 _results: dict[str, Any] = {}
 
 
@@ -82,7 +85,11 @@ async def list_nodes():
 
 @router.post("/execute", response_model=ExecuteResponse)
 async def execute(request: ExecuteRequest):
-    """Execute the training pipeline: layer graph + config."""
+    """Execute the training pipeline: layer graph + config.
+
+    Returns immediately with execution_id.  Training runs in background;
+    progress, completion, and errors are delivered via WebSocket.
+    """
     layer_graph = _schema_to_graph(request.graph)
     config = request.config.model_dump()
 
@@ -102,32 +109,47 @@ async def execute(request: ExecuteRequest):
             checkpoint_path=checkpoint_path,
         )
 
-    try:
-        await manager.send_to_session(session_id, {
-            "type": "execution_start", "execution_id": execution_id,
-        })
+    async def _run_training():
+        try:
+            await manager.send_to_session(session_id, {
+                "type": "execution_start", "execution_id": execution_id,
+            })
 
-        results = await asyncio.get_event_loop().run_in_executor(executor_pool, run)
+            results = await loop.run_in_executor(executor_pool, run)
 
-        serialized = _serialize_pipeline_results(results)
-        _results[execution_id] = serialized
+            serialized = _serialize_pipeline_results(results)
+            # Evict oldest entries if at capacity
+            while len(_results) >= _MAX_RESULTS:
+                _results.pop(next(iter(_results)))
+            _results[execution_id] = serialized
 
-        await manager.send_to_session(session_id, {
-            "type": "execution_complete", "execution_id": execution_id,
-        })
+            await manager.send_to_session(session_id, {
+                "type": "execution_complete",
+                "execution_id": execution_id,
+                "results": serialized,
+            })
+        except Exception as e:
+            await manager.send_to_session(session_id, {
+                "type": "execution_error",
+                "execution_id": execution_id,
+                "error": str(e),
+            })
+        finally:
+            remove_session(execution_id)
+            # Free GPU memory even on exception
+            gc.collect()
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
 
-        return ExecuteResponse(
-            execution_id=execution_id, status="success", results=serialized,
-        )
-    except Exception as e:
-        await manager.send_to_session(session_id, {
-            "type": "execution_error", "error": str(e),
-        })
-        return ExecuteResponse(
-            execution_id=execution_id, status="error", errors=[str(e)],
-        )
-    finally:
-        remove_session(execution_id)
+    asyncio.create_task(_run_training())
+
+    return ExecuteResponse(
+        execution_id=execution_id, status="started", results={},
+    )
 
 
 def _serialize_pipeline_results(results: dict[str, Any]) -> dict[str, Any]:
@@ -190,6 +212,113 @@ async def get_results(execution_id: str):
     if execution_id not in _results:
         raise HTTPException(status_code=404, detail="Execution not found")
     return _results[execution_id]
+
+
+@router.post("/estimate-vram", response_model=VramEstimateResponse)
+async def estimate_vram(request: VramEstimateRequest):
+    """Estimate GPU VRAM usage for the given architecture + config.
+
+    Builds the model on CPU (no data needed) and calculates memory breakdown.
+    """
+    from ..engine.executor import topological_sort
+    from ..engine.graph_module import trace_graph, infer_shapes_graph, GraphModule
+
+    layer_graph = _schema_to_graph(request.graph)
+    input_dim = request.input_dim
+    batch_size = request.batch_size
+    optimizer = request.optimizer
+
+    # 1. Execute layer graph to get ArchRef
+    order = topological_sort(layer_graph)
+    layer_results: dict[str, tuple] = {}
+    for node_id in order:
+        node_inst = layer_graph.nodes[node_id]
+        node_cls = NodeRegistry.get(node_inst.node_type)
+        node = node_cls()
+        node._node_id = node_id
+        kwargs: dict = {}
+        for edge in layer_graph.get_incoming_edges(node_id):
+            src = layer_results.get(edge.source_node)
+            if src is not None:
+                kwargs[edge.target_input] = src[edge.source_output]
+        for k, v in node_inst.params.items():
+            if k not in kwargs:
+                kwargs[k] = v
+        if node_inst.disabled:
+            layer_results[node_id] = node.on_disable(**kwargs)
+        else:
+            layer_results[node_id] = node.execute(**kwargs)
+
+    # Find terminal node
+    all_sources = {e.source_node for e in layer_graph.edges}
+    terminal = None
+    for nid in reversed(order):
+        if nid not in all_sources:
+            terminal = nid
+            break
+    if terminal is None:
+        terminal = order[-1]
+    arch_ref = layer_results[terminal][0]
+
+    # 2. Build model on CPU
+    all_nodes = trace_graph([arch_ref])
+    infer_shapes_graph(all_nodes, input_dim)
+    model = GraphModule(all_nodes, [arch_ref])
+
+    # 3. Calculate memory
+    MB = 1024 * 1024
+    param_count = sum(p.numel() for p in model.parameters())
+    params_mb = round(param_count * 4 / MB, 2)
+    gradients_mb = params_mb
+    optimizer_mult = 2.0 if optimizer in ("Adam", "AdamW") else 1.0
+    optimizer_mb = round(params_mb * optimizer_mult, 2)
+
+    # Activations: sum of per-node output features × batch_size × 4 bytes × 2 (fwd+bwd)
+    act_elements = 0
+    for node in all_nodes:
+        for inp in node.inputs:
+            pass  # just need output shapes
+        # Estimate output size from shape inference: last out_features or num_features
+        out_size = node.params.get("out_features") or node.params.get("num_features") or node.params.get("normalized_shape")
+        if out_size is None and node.module_type == "DotProduct":
+            out_size = 1
+        if out_size is None and node.module_type == "Split":
+            out_size = sum(node.params.get("split_sizes", []))
+        if out_size is not None:
+            act_elements += out_size
+    activations_mb = round(act_elements * batch_size * 4 * 2 / MB, 2)
+
+    # Batch data: input + target tensors
+    last_linear = [n for n in all_nodes if n.module_type == "Linear"]
+    output_dim = last_linear[-1].params.get("out_features", 1) if last_linear else 1
+    batch_data_mb = round(batch_size * (input_dim + output_dim) * 4 / MB, 2)
+
+    total_mb = round(params_mb + gradients_mb + optimizer_mb + activations_mb + batch_data_mb, 2)
+
+    # 4. Query available GPU VRAM
+    available_mb = None
+    fits = None
+    try:
+        import pynvml
+        pynvml.nvmlInit()
+        handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+        mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+        available_mb = round(mem_info.total / MB, 0)
+        fits = total_mb <= available_mb
+    except Exception:
+        pass
+
+    return VramEstimateResponse(
+        param_count=param_count,
+        params_mb=params_mb,
+        gradients_mb=gradients_mb,
+        optimizer_mb=optimizer_mb,
+        activations_mb=activations_mb,
+        batch_data_mb=batch_data_mb,
+        total_mb=total_mb,
+        available_mb=available_mb,
+        fits=fits,
+    )
 
 
 @router.post("/upload/csv", response_model=UploadResponse)

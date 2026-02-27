@@ -10,9 +10,10 @@ export function TrainingDashboard() {
   const errors = useExecutionStore((s) => s.errors);
   const ablationRuns = useExecutionStore((s) => s.ablationRuns);
 
-  const chartData = progress
-    .filter((p) => p.type === 'training_progress')
-    .map((p) => ({
+  const progressEvents = progress.filter((p) => p.type === 'training_progress');
+  const latestProgress = progressEvents.length > 0 ? progressEvents[progressEvents.length - 1] : null;
+
+  const chartData = progressEvents.map((p) => ({
       epoch: p.epoch,
       'Train Loss': p.train_loss,
       'Val Loss': p.val_loss,
@@ -61,6 +62,39 @@ export function TrainingDashboard() {
           {errors.map((e, i) => <div key={i}>{e}</div>)}
         </div>
       )}
+
+      {/* Progress bar */}
+      {latestProgress?.total_samples != null && (isRunning || chartData.length > 0) && (() => {
+        const trained = latestProgress.samples_trained ?? 0;
+        const total = latestProgress.total_samples!;
+        const pct = total > 0 ? Math.min(100, (trained / total) * 100) : 0;
+        const throughput = latestProgress.throughput ?? 0;
+        const fmt = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`;
+        return (
+          <div style={{ marginBottom: 10 }}>
+            <div style={{
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              fontSize: 10, color: '#a0a0b0', marginBottom: 4,
+            }}>
+              <span>{fmt(trained)} / {fmt(total)} samples</span>
+              <span>
+                {throughput > 0 && <>{fmt(Math.round(throughput))} samples/sec &nbsp;·&nbsp; </>}
+                Epoch {latestProgress.epoch}/{latestProgress.total_epochs}
+              </span>
+            </div>
+            <div style={{
+              height: 6, borderRadius: 3, background: '#2a2a3e', overflow: 'hidden',
+            }}>
+              <div style={{
+                height: '100%', borderRadius: 3,
+                width: `${pct}%`,
+                background: isRunning ? '#3b82f6' : '#22c55e',
+                transition: 'width 0.3s ease',
+              }} />
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Current run chart */}
       {chartData.length > 0 && (

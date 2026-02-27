@@ -52,4 +52,7 @@ export interface TrainingProgress {
   total_epochs: number;
   train_loss: number;
   val_loss: number | null;
+  samples_trained?: number;
+  total_samples?: number;
+  throughput?: number;
 }

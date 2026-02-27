@@ -88,3 +88,22 @@ class UploadResponse(BaseModel):
     filename: str
     columns: list[str]
     rows: int
+
+
+class VramEstimateRequest(BaseModel):
+    graph: GraphSchema
+    input_dim: int
+    batch_size: int = 32
+    optimizer: str = "Adam"
+
+
+class VramEstimateResponse(BaseModel):
+    param_count: int
+    params_mb: float
+    gradients_mb: float
+    optimizer_mb: float
+    activations_mb: float
+    batch_data_mb: float
+    total_mb: float
+    available_mb: float | None = None
+    fits: bool | None = None
