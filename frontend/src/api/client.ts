@@ -64,3 +64,15 @@ export async function loadGraph(graphId: string): Promise<{
 export async function deleteGraph(graphId: string) {
   await api.delete(`/graphs/${graphId}`);
 }
+
+export async function pauseTraining(executionId: string) {
+  await api.post(`/execute/${executionId}/pause`);
+}
+
+export async function resumeTraining(executionId: string) {
+  await api.post(`/execute/${executionId}/resume`);
+}
+
+export async function stopTraining(executionId: string) {
+  await api.post(`/execute/${executionId}/stop`);
+}

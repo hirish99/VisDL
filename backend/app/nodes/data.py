@@ -5,11 +5,14 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, Subset, TensorDataset
 
 from .base import BaseNode, DataType, InputSpec, OutputSpec
 from .registry import NodeRegistry
 from ..config import settings
+
+# Files larger than this use chunked reading to reduce peak memory
+_CHUNK_THRESHOLD_BYTES = 100 * 1024 * 1024  # 100 MB
 
 
 @NodeRegistry.register("CSVLoader")
@@ -42,8 +45,6 @@ class CSVLoaderNode(BaseNode):
         if not file_path.exists():
             raise FileNotFoundError(f"Uploaded file not found: {file_id}")
 
-        df = pd.read_csv(file_path)
-
         input_cols = [c.strip() for c in kwargs["input_columns"].split(",") if c.strip()]
         target_cols = [c.strip() for c in kwargs["target_columns"].split(",") if c.strip()]
 
@@ -52,8 +53,19 @@ class CSVLoaderNode(BaseNode):
         if not target_cols:
             raise ValueError("No target columns specified")
 
-        X = torch.tensor(df[input_cols].values, dtype=torch.float32)
-        y = torch.tensor(df[target_cols].values, dtype=torch.float32)
+        file_size = file_path.stat().st_size
+        if file_size < _CHUNK_THRESHOLD_BYTES:
+            df = pd.read_csv(file_path)
+            X = torch.tensor(df[input_cols].values, dtype=torch.float32)
+            y = torch.tensor(df[target_cols].values, dtype=torch.float32)
+        else:
+            chunks_X, chunks_y = [], []
+            for chunk in pd.read_csv(file_path, chunksize=50_000):
+                chunks_X.append(torch.tensor(chunk[input_cols].values, dtype=torch.float32))
+                chunks_y.append(torch.tensor(chunk[target_cols].values, dtype=torch.float32))
+            X = torch.cat(chunks_X)
+            y = torch.cat(chunks_y)
+            del chunks_X, chunks_y
 
         return ({"X": X, "y": y, "columns": {"input": input_cols, "target": target_cols}},)
 
@@ -98,14 +110,11 @@ class DataSplitterNode(BaseNode):
         X, y = dataset["X"], dataset["y"]
         n = len(X)
         n_val = max(1, int(n * val_ratio))
-        n_train = n - n_val
 
-        indices = torch.randperm(n)
-        train_idx = indices[:n_train]
-        val_idx = indices[n_train:]
-
-        train_ds = TensorDataset(X[train_idx], y[train_idx])
-        val_ds = TensorDataset(X[val_idx], y[val_idx])
+        indices = torch.randperm(n).tolist()
+        full_ds = TensorDataset(X, y)
+        train_ds = Subset(full_ds, indices[n_val:])
+        val_ds = Subset(full_ds, indices[:n_val])
 
         train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=shuffle)
         val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)

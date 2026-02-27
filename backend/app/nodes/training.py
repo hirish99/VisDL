@@ -1,4 +1,5 @@
-"""Training loop node with progress callback support."""
+"""Training loop node with progress callback and pause/resume/stop support."""
+from pathlib import Path
 from typing import Any, Callable
 
 import torch
@@ -6,6 +7,8 @@ import torch.nn as nn
 
 from .base import BaseNode, DataType, InputSpec, OutputSpec
 from .registry import NodeRegistry
+from ..engine.checkpoint import save_checkpoint, load_checkpoint
+from ..engine.training_control import TrainingController, TrainingState
 
 
 @NodeRegistry.register("TrainingLoop")
@@ -29,6 +32,12 @@ class TrainingLoopNode(BaseNode):
             "progress_callback": InputSpec(
                 dtype=DataType.ANY, required=False, is_handle=False,
             ),
+            "training_controller": InputSpec(
+                dtype=DataType.ANY, required=False, is_handle=False,
+            ),
+            "checkpoint_path": InputSpec(
+                dtype=DataType.ANY, required=False, is_handle=False,
+            ),
         }
 
     @classmethod
@@ -43,13 +52,30 @@ class TrainingLoopNode(BaseNode):
         val_loader = kwargs.get("val_loader")
         epochs = kwargs.get("epochs", 10)
         progress_cb: Callable | None = kwargs.get("progress_callback")
+        controller: TrainingController | None = kwargs.get("training_controller")
+        checkpoint_path: Path | None = kwargs.get("checkpoint_path")
 
         # Use same device as model
         device = next(model.parameters()).device
 
         history = {"train_loss": [], "val_loss": [], "epoch": []}
+        start_epoch = 0
+        stopped_early = False
 
-        for epoch in range(epochs):
+        # Resume from checkpoint if it exists
+        if checkpoint_path and Path(checkpoint_path).exists():
+            start_epoch, history = load_checkpoint(Path(checkpoint_path), model, optimizer)
+
+        for epoch in range(start_epoch, epochs):
+            # Check control signal before each epoch
+            if controller:
+                state = controller.check()  # blocks while paused
+                if state == TrainingState.STOPPED:
+                    stopped_early = True
+                    if checkpoint_path:
+                        save_checkpoint(Path(checkpoint_path), model, optimizer, epoch, history)
+                    break
+
             # Training phase
             model.train()
             epoch_loss = 0.0
@@ -94,9 +120,23 @@ class TrainingLoopNode(BaseNode):
                     "val_loss": avg_val_loss,
                 })
 
+            # Check if paused after epoch — save checkpoint so state is preserved
+            if controller and controller.state == TrainingState.PAUSED:
+                if checkpoint_path:
+                    save_checkpoint(Path(checkpoint_path), model, optimizer, epoch + 1, history)
+                if progress_cb:
+                    progress_cb({"type": "training_paused", "epoch": epoch + 1})
+                state = controller.check()  # blocks until resume/stop
+                if state == TrainingState.STOPPED:
+                    stopped_early = True
+                    break
+                if progress_cb:
+                    progress_cb({"type": "training_resumed", "epoch": epoch + 1})
+
         return ({
             "model": model,
             "history": history,
             "final_train_loss": history["train_loss"][-1] if history["train_loss"] else None,
             "final_val_loss": history["val_loss"][-1] if history["val_loss"] else None,
+            "stopped_early": stopped_early,
         },)

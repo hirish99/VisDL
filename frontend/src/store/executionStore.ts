@@ -11,6 +11,7 @@ export interface AblationRun {
 
 interface ExecutionState {
   isRunning: boolean;
+  isPaused: boolean;
   sessionId: string;
   executionId: string | null;
   progress: TrainingProgress[];
@@ -19,6 +20,7 @@ interface ExecutionState {
   ablationRuns: AblationRun[];
 
   setRunning: (running: boolean) => void;
+  setPaused: (paused: boolean) => void;
   setSessionId: (id: string) => void;
   setExecutionId: (id: string | null) => void;
   addProgress: (p: TrainingProgress) => void;
@@ -31,6 +33,7 @@ interface ExecutionState {
 
 export const useExecutionStore = create<ExecutionState>((set) => ({
   isRunning: false,
+  isPaused: false,
   sessionId: `session_${Date.now()}`,
   executionId: null,
   progress: [],
@@ -38,13 +41,14 @@ export const useExecutionStore = create<ExecutionState>((set) => ({
   errors: [],
   ablationRuns: [],
 
-  setRunning: (running) => set({ isRunning: running }),
+  setRunning: (running) => set({ isRunning: running, ...(running ? {} : { isPaused: false }) }),
+  setPaused: (paused) => set({ isPaused: paused }),
   setSessionId: (id) => set({ sessionId: id }),
   setExecutionId: (id) => set({ executionId: id }),
   addProgress: (p) => set((s) => ({ progress: [...s.progress, p] })),
   setResults: (r) => set({ results: r }),
   setErrors: (e) => set({ errors: e }),
-  clearProgress: () => set({ progress: [], errors: [] }),
+  clearProgress: () => set({ progress: [], errors: [], isPaused: false }),
   addAblationRun: (run) => set((s) => ({ ablationRuns: [...s.ablationRuns, run] })),
   clearAblationRuns: () => set({ ablationRuns: [] }),
 }));

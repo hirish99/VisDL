@@ -1,9 +1,11 @@
 """Pipeline executor: orchestrates the fixed training pipeline using layer graph + config."""
+from pathlib import Path
 from typing import Any, Callable
 
 from ..nodes.registry import NodeRegistry
 from .executor import topological_sort
 from .graph import Graph
+from .training_control import TrainingController
 
 
 ProgressCallback = Callable[[dict[str, Any]], None]
@@ -13,6 +15,8 @@ def execute_pipeline(
     layer_graph: Graph,
     config: dict[str, Any],
     progress_callback: ProgressCallback | None = None,
+    training_controller: TrainingController | None = None,
+    checkpoint_path: Path | None = None,
 ) -> dict[str, Any]:
     """Execute the full training pipeline.
 
@@ -150,12 +154,15 @@ def execute_pipeline(
         val_loader=val_loader,
         epochs=config.get("epochs", 10),
         progress_callback=progress_callback,
+        training_controller=training_controller,
+        checkpoint_path=checkpoint_path,
     )[0]
 
     results["training"] = {
         "history": training_result["history"],
         "final_train_loss": training_result.get("final_train_loss"),
         "final_val_loss": training_result.get("final_val_loss"),
+        "stopped_early": training_result.get("stopped_early", False),
     }
 
     # --- 8. MetricsCollector ---

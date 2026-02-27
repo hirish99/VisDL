@@ -5,8 +5,6 @@
 
 Visual Deep Learning Research Tool — a ComfyUI-style web app for constructing, training, and ablating neural network architectures through a node graph UI.
 
-<!-- TODO: add screenshot -->
-
 ## Prerequisites
 
 - Python 3.10+
@@ -139,35 +137,55 @@ Auto-discovered on startup. No registration boilerplate elsewhere.
 - **Layer specs, not live modules**: Layer nodes emit spec dicts. ModelAssembly builds `nn.Sequential` with automatic shape inference.
 - **GPU-aware**: Model placed on CUDA if available; training loop moves batches to model's device.
 - **Ablation as first-class**: Every node has a disable toggle. Disabled layers become `nn.Identity`. Save/compare configs side-by-side.
+- **Pause/resume/stop training**: Thread-safe training controller with checkpoint save/restore. Pause mid-training, resume later, or stop early with partial results.
+- **Large dataset support**: Chunked CSV reading for files >100MB, zero-copy train/val splitting via `torch.utils.data.Subset`, configurable upload size limit (default 500MB).
 - **Live system monitoring**: CPU, RAM, GPU utilization, and VRAM usage streamed over WebSocket and displayed in the status bar.
 
 ## Sample Data
 
 `sample_data.csv`, `sample_validation.csv`, `sample_test.csv` are included for testing. Function: `target = x1^2 + 2*x2 + noise`. Configure CSV Loader with `input_columns: x1,x2` and `target_columns: target`.
 
+## Testing
+
+```bash
+# Run all tests (excluding slow/stress tests)
+cd VisDL
+.venv/bin/python -m pytest backend/tests/ -v
+
+# Run stress tests for large datasets
+.venv/bin/python -m pytest backend/tests/ -v -m slow
+```
+
+113 tests covering ablation, shape inference, model assembly, pipeline execution, graph validation, training control (pause/resume/stop, checkpoints), and large dataset handling.
+
 ## Project Structure
 
 ```
 backend/
-  run.py                   # Entry point (starts uvicorn)
-  requirements.txt         # Python dependencies
+  run.py                          # Entry point (starts uvicorn)
+  requirements.txt                # Python dependencies
+  pytest.ini                      # Test configuration
+  tests/                          # Test suite (113 tests)
   app/
-    main.py                # FastAPI app, CORS, lifespan, WS endpoints
-    config.py              # Pydantic settings
-    api/routes.py          # REST endpoints
-    api/websocket.py       # WS connection manager (training telemetry)
-    api/system_monitor.py  # WS system stats (CPU/RAM/GPU)
-    engine/executor.py     # Topo sort + execute
-    engine/validator.py    # DAG/type/input validation
-    nodes/                 # All node implementations (auto-discovered)
-    models/schemas.py      # Pydantic request/response models
+    main.py                       # FastAPI app, CORS, lifespan, WS endpoints
+    config.py                     # Pydantic settings
+    api/routes.py                 # REST endpoints (incl. pause/resume/stop)
+    api/websocket.py              # WS connection manager (training telemetry)
+    api/system_monitor.py         # WS system stats (CPU/RAM/GPU)
+    engine/executor.py            # Topo sort + execute
+    engine/validator.py           # DAG/type/input validation
+    engine/training_control.py    # Thread-safe pause/resume/stop controller
+    engine/checkpoint.py          # Model checkpoint save/load
+    engine/session.py             # Active execution session tracking
+    nodes/                        # All node implementations (auto-discovered)
+    models/schemas.py             # Pydantic request/response models
 frontend/
-  package.json             # Node dependencies
-  vite.config.ts           # Dev server + proxy config
+  package.json                    # Node dependencies
+  vite.config.ts                  # Dev server + proxy config
   src/
-    App.tsx                # Main layout
-    store/                 # Zustand (graphStore, executionStore)
-    components/            # Canvas, NodePalette, NodeTypes, Panels, StatusBar
-    hooks/                 # useWebSocket, useNodeRegistry, useSystemMonitor
-    api/client.ts          # REST/WS client
+    App.tsx                       # Main layout
+    store/                        # Zustand (graphStore, executionStore)
+    components/                   # Canvas, NodePalette, NodeTypes, Panels, StatusBar, Toolbar
+    hooks/                        # useWebSocket, useNodeRegistry, useSystemMonitor
+    api/client.ts                 # REST/WS client
 ```

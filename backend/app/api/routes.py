@@ -19,6 +19,7 @@ from ..models.schemas import (
     ExecuteRequest, ExecuteResponse, GraphSchema,
     SavedGraph, UploadResponse,
 )
+from ..engine.session import create_session, get_session, remove_session
 from ..nodes.registry import NodeRegistry
 from .websocket import manager
 
@@ -90,8 +91,16 @@ async def execute(request: ExecuteRequest):
     loop = asyncio.get_event_loop()
     progress_cb = manager.make_progress_callback(session_id, loop)
 
+    session = create_session(execution_id, session_id)
+    checkpoint_path = settings.weights_dir / "checkpoints" / f"{execution_id}.pt"
+
     def run():
-        return execute_pipeline(layer_graph, config, progress_callback=progress_cb)
+        return execute_pipeline(
+            layer_graph, config,
+            progress_callback=progress_cb,
+            training_controller=session.controller,
+            checkpoint_path=checkpoint_path,
+        )
 
     try:
         await manager.send_to_session(session_id, {
@@ -117,6 +126,8 @@ async def execute(request: ExecuteRequest):
         return ExecuteResponse(
             execution_id=execution_id, status="error", errors=[str(e)],
         )
+    finally:
+        remove_session(execution_id)
 
 
 def _serialize_pipeline_results(results: dict[str, Any]) -> dict[str, Any]:
@@ -138,6 +149,42 @@ def _serialize_pipeline_results(results: dict[str, Any]) -> dict[str, Any]:
     return serialized
 
 
+@router.post("/execute/{execution_id}/pause")
+async def pause_training(execution_id: str):
+    session = get_session(execution_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Execution not found or already completed")
+    session.controller.pause()
+    await manager.send_to_session(session.session_id, {
+        "type": "training_paused", "execution_id": execution_id,
+    })
+    return {"status": "paused"}
+
+
+@router.post("/execute/{execution_id}/resume")
+async def resume_training(execution_id: str):
+    session = get_session(execution_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Execution not found or already completed")
+    session.controller.resume()
+    await manager.send_to_session(session.session_id, {
+        "type": "training_resumed", "execution_id": execution_id,
+    })
+    return {"status": "resumed"}
+
+
+@router.post("/execute/{execution_id}/stop")
+async def stop_training(execution_id: str):
+    session = get_session(execution_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Execution not found or already completed")
+    session.controller.stop()
+    await manager.send_to_session(session.session_id, {
+        "type": "training_stopped", "execution_id": execution_id,
+    })
+    return {"status": "stopped"}
+
+
 @router.get("/results/{execution_id}")
 async def get_results(execution_id: str):
     if execution_id not in _results:
@@ -154,6 +201,12 @@ async def upload_csv(file: UploadFile = File(...)):
     file_id = f"{uuid.uuid4()}_{file.filename}"
     dest = settings.upload_dir / file_id
     content = await file.read()
+    max_bytes = settings.max_upload_size_mb * 1024 * 1024
+    if len(content) > max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large ({len(content) // (1024*1024)}MB). Max is {settings.max_upload_size_mb}MB.",
+        )
     dest.write_bytes(content)
 
     df = pd.read_csv(dest)

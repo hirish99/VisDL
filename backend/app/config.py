@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     upload_dir: Path = PROJECT_ROOT / "data" / "uploads"
     weights_dir: Path = PROJECT_ROOT / "data" / "weights"
     graphs_dir: Path = PROJECT_ROOT / "data" / "graphs"
-    max_upload_size_mb: int = 100
+    max_upload_size_mb: int = 500
     cors_origins: list[str] = ["http://localhost:5173", "http://localhost:3000"]
 
     model_config = {"env_prefix": "VISDL_"}

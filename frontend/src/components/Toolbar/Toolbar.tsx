@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useGraphStore } from '../../store/graphStore';
 import { useConfigStore } from '../../store/configStore';
 import { useExecutionStore } from '../../store/executionStore';
-import { executeGraph, saveGraph, listGraphs, loadGraph } from '../../api/client';
+import { executeGraph, saveGraph, listGraphs, loadGraph, pauseTraining, resumeTraining, stopTraining } from '../../api/client';
 
 export function Toolbar() {
   const toSchema = useGraphStore((s) => s.toGraphSchema);
@@ -13,7 +13,10 @@ export function Toolbar() {
   const resetConfig = useConfigStore((s) => s.reset);
   const sessionId = useExecutionStore((s) => s.sessionId);
   const isRunning = useExecutionStore((s) => s.isRunning);
+  const isPaused = useExecutionStore((s) => s.isPaused);
+  const executionId = useExecutionStore((s) => s.executionId);
   const setRunning = useExecutionStore((s) => s.setRunning);
+  const setExecutionId = useExecutionStore((s) => s.setExecutionId);
   const setResults = useExecutionStore((s) => s.setResults);
   const setErrors = useExecutionStore((s) => s.setErrors);
   const clearProgress = useExecutionStore((s) => s.clearProgress);
@@ -44,6 +47,7 @@ export function Toolbar() {
     const schema = toSchema();
     try {
       const res = await executeGraph(schema, config, sessionId);
+      setExecutionId(res.execution_id);
       if (res.status === 'success') {
         setResults(res.results);
       } else {
@@ -53,7 +57,20 @@ export function Toolbar() {
       setErrors([err.message || 'Execution failed']);
     } finally {
       setRunning(false);
+      setExecutionId(null);
     }
+  };
+
+  const handlePause = async () => {
+    if (executionId) await pauseTraining(executionId);
+  };
+
+  const handleResume = async () => {
+    if (executionId) await resumeTraining(executionId);
+  };
+
+  const handleStop = async () => {
+    if (executionId) await stopTraining(executionId);
   };
 
   const handleSave = async () => {
@@ -102,8 +119,24 @@ export function Toolbar() {
         ...btnStyle,
         background: isRunning ? '#2a2a3e' : '#22c55e',
       }}>
-        {isRunning ? 'Running...' : 'Execute'}
+        {isRunning ? (isPaused ? 'Paused' : 'Running...') : 'Execute'}
       </button>
+
+      {isRunning && !isPaused && (
+        <button onClick={handlePause} style={{ ...btnStyle, background: '#f59e0b' }}>
+          Pause
+        </button>
+      )}
+      {isRunning && isPaused && (
+        <button onClick={handleResume} style={{ ...btnStyle, background: '#22c55e' }}>
+          Resume
+        </button>
+      )}
+      {isRunning && (
+        <button onClick={handleStop} style={{ ...btnStyle, background: '#ef4444' }}>
+          Stop
+        </button>
+      )}
 
       <button onClick={() => setSaveDialogOpen(true)} style={btnStyle}>Save</button>
       <button onClick={handleOpenLoad} style={btnStyle}>Load</button>
