@@ -27,6 +27,7 @@ Thumbs.db
 
 # Project
 data/
+backend/uploads/
 *.pt
 *.pth
 
