@@ -246,17 +246,23 @@ Load a saved graph from the **Load** dropdown in the toolbar. Saved graphs inclu
 
 ## Laplace PDE Data Generation
 
-Generate training data for a 2D exterior Laplace PDE via the Method of Fundamental Solutions (MFS):
+Generate training data for a 2D exterior Laplace PDE via the Method of Fundamental Solutions (MFS). The generator uses **GPU-accelerated batch processing** via a modular PyTorch pipeline with swappable components (curves, sources, queries, kernels, feature assemblers).
 
 ```bash
 # Compact format (default) — boundary values + query coords + target
 .venv/bin/python scripts/generate_laplace_data.py \
-    --n_samples 5000 --n_sensors 64 --n_queries 1 --seed 42
+    --n_samples 5000 --n_sensors 64 --n_queries 100 --seed 42
 
 # Full format — all 8 sensor features + global geometry + query + target
 .venv/bin/python scripts/generate_laplace_data.py \
-    --n_samples 5000 --n_sensors 64 --n_queries 1 --format full --seed 42
+    --n_samples 5000 --n_sensors 64 --n_queries 100 --format full --seed 42
+
+# GPU acceleration with large batches
+.venv/bin/python scripts/generate_laplace_data.py \
+    --n_samples 80000 --n_queries 100 --device cuda --batch_size 4096
 ```
+
+**CLI options**: `--device cuda|cpu|auto`, `--batch_size` (curves per GPU batch), `--min_sources` / `--max_sources` (MFS sources per curve, randomized), `--kernel laplace|helmholtz`, `--wavenumber` (for Helmholtz).
 
 **Compact format** (default, DeepONet-ready): `n_sensors + 3` columns
 - `s_0_g, s_1_g, ...` — boundary potential values at each sensor
@@ -264,6 +270,8 @@ Generate training data for a 2D exterior Laplace PDE via the Method of Fundament
 - `u` — target solution value
 
 **Full format**: `n_sensors * 8 + 7` columns — adds sensor geometry (position, tangent, curvature, normal) and global features (perimeter, area, centroid).
+
+Each curve gets a random number of MFS sources (uniform between `--min_sources` and `--max_sources`) with random strengths, ensuring diverse training examples. Sources are internal to the solver and don't appear in the output CSV.
 
 To use the generated data with the DeepONet graph:
 1. Run the generation script (outputs to `data/uploads/laplace_train.csv`)
@@ -355,8 +363,9 @@ class MyLayerNode(BaseNode):
 - **Ablation as first-class**: Every node has a disable toggle. Disabled layers become `nn.Identity` or vanish from the graph entirely.
 - **Glob column patterns**: CSV Loader supports `fnmatch` patterns (`s_*_g`) for selecting columns in high-dimensional datasets without listing them individually.
 - **Pause/resume/stop training**: Thread-safe training controller with checkpoint save/restore.
-- **Large dataset support**: Chunked CSV reading for files >100MB, zero-copy train/val splitting via `torch.utils.data.Subset`.
+- **Large dataset support**: Streaming file upload (no memory limit), chunked CSV reading for files >100MB, zero-copy train/val splitting via `torch.utils.data.Subset`.
 - **Live system monitoring**: CPU, RAM, and VRAM usage streamed over WebSocket and displayed in the status bar.
+- **GPU-accelerated data generation**: Modular pipeline with protocol-based swappable components (curves, sources, queries, kernels, feature assemblers). Processes thousands of curves simultaneously on GPU.
 
 ## Testing
 
@@ -369,7 +378,7 @@ cd VisDL
 .venv/bin/python -m pytest backend/tests/ -v -m slow
 ```
 
-187 tests covering: graph module (DAG tracing, shape inference, forward pass), structural nodes (Split, Concat, DotProduct, Add), layer ablation, model assembly, pipeline execution, graph validation, data node glob patterns, training control (pause/resume/stop, checkpoints), Laplace data generation, and large dataset handling.
+190+ tests covering: graph module (DAG tracing, shape inference, forward pass), structural nodes (Split, Concat, DotProduct, Add), layer ablation, model assembly, pipeline execution, graph validation, data node glob patterns, training control (pause/resume/stop, checkpoints), Laplace data generation (NumPy compat + GPU pipeline), and large dataset handling.
 
 ## Project Structure
 
@@ -378,7 +387,7 @@ backend/
   run.py                          # Entry point (starts uvicorn)
   requirements.txt                # Python dependencies
   pytest.ini                      # Test configuration
-  tests/                          # Test suite (187 tests)
+  tests/                          # Test suite (190+ tests)
   app/
     main.py                       # FastAPI app, CORS, lifespan, WS endpoints
     config.py                     # Pydantic settings (upload dir, max size, etc.)
@@ -427,7 +436,17 @@ frontend/
       useNodeRegistry.ts          # Fetch node definitions from backend
       useSystemMonitor.ts         # System stats WebSocket
 scripts/
-  generate_laplace_data.py        # Laplace PDE data generator (MFS, compact/full format)
+  generate_laplace_data.py        # CLI entry point for Laplace PDE data generation
+  pde_datagen/                    # GPU-accelerated modular pipeline
+    types.py                      # CurveBatch (batched Fourier star-curves)
+    protocols.py                  # Protocol definitions (CurveGenerator, SourcePlacer, etc.)
+    curves.py                     # FourierStarCurveGenerator (GPU batch rejection sampling)
+    sources.py                    # RejectionSourcePlacer (variable per-curve counts)
+    queries.py                    # NormalOffsetQuerySampler
+    kernels.py                    # LaplaceKernel2D, HelmholtzKernel2D
+    features.py                   # SimpleAssembler, CompactAssembler, FullAssembler
+    pipeline.py                   # BatchPipeline orchestrator
+    writer.py                     # Chunked CSV writer
 data/
   graphs/                         # Saved graph architectures (regression, classification, DeepONet)
   uploads/                        # Uploaded CSV files

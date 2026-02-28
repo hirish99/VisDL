@@ -79,6 +79,7 @@ export async function stopTraining(executionId: string) {
 
 export interface VramEstimate {
   param_count: number;
+  effective_batch_size: number;
   params_mb: number;
   gradients_mb: number;
   optimizer_mb: number;
@@ -94,12 +95,14 @@ export async function estimateVram(
   inputDim: number,
   batchSize: number,
   optimizer: string,
+  numTrainSamples?: number | null,
 ): Promise<VramEstimate> {
   const { data } = await api.post('/estimate-vram', {
     graph,
     input_dim: inputDim,
     batch_size: batchSize,
     optimizer,
+    num_train_samples: numTrainSamples ?? undefined,
   });
   return data;
 }

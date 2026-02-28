@@ -64,7 +64,7 @@ export function TrainingDashboard() {
       )}
 
       {/* Progress bar */}
-      {latestProgress?.total_samples != null && (isRunning || chartData.length > 0) && (() => {
+      {latestProgress?.total_samples != null && isRunning && (() => {
         const trained = latestProgress.samples_trained ?? 0;
         const total = latestProgress.total_samples!;
         const pct = total > 0 ? Math.min(100, (trained / total) * 100) : 0;

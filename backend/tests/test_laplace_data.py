@@ -112,16 +112,17 @@ class TestMFS:
         assert G[0, 0] > 0  # -1/(2pi) * log(small) > 0
 
     def test_sources_inside_curve(self, rng):
-        """MFS sources should be inside the curve."""
+        """MFS sources should be strictly inside the curve."""
         r0, a, b = random_star_curve(rng)
         src_x, src_y = place_sources_inside(r0, a, b, 20, rng)
-        # Sources should be closer to centroid than boundary
         _, _, cx, cy = curve_geometry(r0, a, b)
-        dist_to_center = np.sqrt((src_x - cx)**2 + (src_y - cy)**2)
-        # All sources should be within the curve's max radius
-        t = np.linspace(0, TWO_PI, 500, endpoint=False)
-        r = _eval_r(r0, a, b, t)
-        assert np.all(dist_to_center < np.max(r) * 1.1)
+        # Convert sources to polar relative to centroid and check r < r(theta)
+        dx = src_x - cx
+        dy = src_y - cy
+        theta = np.arctan2(dy, dx) % TWO_PI
+        r_src = np.sqrt(dx**2 + dy**2)
+        r_boundary = _eval_r(r0, a, b, theta)
+        assert np.all(r_src < r_boundary), "Sources should be inside the curve"
 
     def test_potential_linearity(self, rng):
         """Potential should scale linearly with strengths."""
@@ -194,7 +195,7 @@ class TestCLI:
                 sys.executable, str(Path(__file__).resolve().parents[2] / "scripts" / "generate_laplace_data.py"),
                 "--n_samples", "3",
                 "--n_queries", "2",
-                "--n_sources", "5",
+                "--min_sources", "3", "--max_sources", "8",
                 "--output", str(output),
                 "--seed", "99",
             ],
@@ -219,7 +220,7 @@ class TestCLI:
                 "--n_samples", "3",
                 "--n_sensors", "4",
                 "--n_queries", "2",
-                "--n_sources", "5",
+                "--min_sources", "3", "--max_sources", "8",
                 "--format", "compact",
                 "--output", str(output),
                 "--seed", "99",
@@ -245,7 +246,7 @@ class TestCLI:
                 "--n_samples", "2",
                 "--n_sensors", "4",
                 "--n_queries", "2",
-                "--n_sources", "5",
+                "--min_sources", "3", "--max_sources", "8",
                 "--format", "full",
                 "--output", str(output),
                 "--seed", "99",
@@ -261,3 +262,240 @@ class TestCLI:
             assert len(header) == 4 * 8 + 4 + 2 + 1  # full format
             rows = list(reader)
             assert len(rows) == 2 * 2
+
+
+# ---------------------------------------------------------------------------
+# GPU pipeline tests (pde_datagen package)
+# ---------------------------------------------------------------------------
+
+import torch
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+from pde_datagen.types import CurveBatch
+from pde_datagen.curves import FourierStarCurveGenerator
+from pde_datagen.sources import RejectionSourcePlacer
+from pde_datagen.queries import NormalOffsetQuerySampler
+from pde_datagen.kernels import LaplaceKernel2D, HelmholtzKernel2D
+from pde_datagen.features import SimpleAssembler, CompactAssembler, FullAssembler
+from pde_datagen.pipeline import BatchPipeline, PipelineConfig
+
+
+@pytest.fixture
+def device():
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+class TestCurveBatch:
+    def test_eval_r_shape(self, device):
+        gen = FourierStarCurveGenerator("medium")
+        curves = gen.generate(8, device)
+        t = torch.linspace(0, 2 * np.pi, 100, device=device)
+        r = curves.eval_r(t)
+        assert r.shape == (8, 100)
+        assert (r > 0).all(), "All r(t) should be positive"
+
+    def test_eval_xy_on_curve(self, device):
+        gen = FourierStarCurveGenerator("medium")
+        curves = gen.generate(4, device)
+        t = torch.tensor([0.0, 2 * np.pi], device=device)
+        x, y = curves.eval_xy(t)
+        # Curve is periodic: start == end
+        assert torch.allclose(x[:, 0], x[:, 1], atol=1e-5)
+        assert torch.allclose(y[:, 0], y[:, 1], atol=1e-5)
+
+    def test_eval_r_batched_matches_shared(self, device):
+        gen = FourierStarCurveGenerator("medium")
+        curves = gen.generate(4, device)
+        t_shared = torch.linspace(0, 2 * np.pi, 50, device=device)
+        # eval_r with shared t
+        r_shared = curves.eval_r(t_shared)
+        # eval_r_batched with same t broadcasted to (B, T)
+        t_batched = t_shared.unsqueeze(0).expand(4, -1)
+        r_batched = curves.eval_r_batched(t_batched)
+        assert torch.allclose(r_shared, r_batched, atol=1e-5)
+
+    def test_derivatives_normals_unit_length(self, device):
+        gen = FourierStarCurveGenerator("medium")
+        curves = gen.generate(4, device)
+        t = torch.linspace(0, 2 * np.pi, 100, device=device)
+        _, _, _, nx, ny = curves.eval_derivatives(t)
+        norms = torch.sqrt(nx * nx + ny * ny)
+        assert torch.allclose(norms, torch.ones_like(norms), atol=1e-5)
+
+    def test_geometry_circle(self, device):
+        """Pure circle (no Fourier modes) should have known perimeter and area."""
+        curves = CurveBatch(
+            r0=torch.tensor([1.0], device=device),
+            alphas=torch.zeros(1, 5, device=device),
+            betas=torch.zeros(1, 5, device=device),
+        )
+        perimeter, area, cx, cy = curves.geometry()
+        assert abs(perimeter.item() - 2 * np.pi) < 0.01
+        assert abs(area.item() - np.pi) < 0.05
+        assert abs(cx.item()) < 0.01
+        assert abs(cy.item()) < 0.01
+
+    def test_slice(self, device):
+        gen = FourierStarCurveGenerator("medium")
+        curves = gen.generate(10, device)
+        mask = torch.tensor([True, False, True, False, True,
+                             False, True, False, True, False], device=device)
+        subset = curves.slice(mask)
+        assert subset.batch_size == 5
+
+
+class TestGPUSources:
+    def test_sources_inside_curves_fixed(self, device):
+        gen = FourierStarCurveGenerator("medium")
+        curves = gen.generate(8, device)
+        placer = RejectionSourcePlacer(margin=0.9)
+        src_x, src_y = placer.place(curves, 20, device)
+        assert src_x.shape == (8, 20)
+        # Verify sources are inside: r_src < r_boundary for each curve
+        _, _, cx, cy = curves.geometry()
+        dx = src_x - cx[:, None]
+        dy = src_y - cy[:, None]
+        theta = torch.atan2(dy, dx) % (2 * np.pi)
+        r_src = torch.sqrt(dx * dx + dy * dy)
+        r_bdy = curves.eval_r_batched(theta)
+        assert (r_src < r_bdy).all(), "All sources should be inside their curves"
+
+    def test_sources_variable_counts(self, device):
+        """Per-curve source counts: output padded to max, all valid sources inside."""
+        gen = FourierStarCurveGenerator("medium")
+        curves = gen.generate(8, device)
+        placer = RejectionSourcePlacer(margin=0.9)
+        n_src = torch.tensor([5, 10, 15, 20, 25, 30, 35, 40], device=device)
+        src_x, src_y = placer.place(curves, n_src, device)
+        assert src_x.shape == (8, 40)  # padded to max
+        # Check that filled slots are inside, padding slots are zero
+        _, _, cx, cy = curves.geometry()
+        for b in range(8):
+            ns = n_src[b].item()
+            # Valid sources
+            dx = src_x[b, :ns] - cx[b]
+            dy = src_y[b, :ns] - cy[b]
+            theta = torch.atan2(dy, dx) % (2 * np.pi)
+            r_s = torch.sqrt(dx * dx + dy * dy)
+            r_b = curves.slice(torch.tensor([b == i for i in range(8)], device=device)).eval_r_batched(theta.unsqueeze(0)).squeeze(0)
+            assert (r_s < r_b).all(), f"Curve {b}: sources should be inside"
+            # Padding slots should be zero
+            assert (src_x[b, ns:] == 0).all()
+            assert (src_y[b, ns:] == 0).all()
+
+
+class TestGPUKernels:
+    def test_laplace_shape(self, device):
+        kernel = LaplaceKernel2D()
+        px = torch.randn(4, 10, device=device)
+        py = torch.randn(4, 10, device=device)
+        sx = torch.randn(4, 5, device=device)
+        sy = torch.randn(4, 5, device=device)
+        G = kernel.evaluate(px, py, sx, sy)
+        assert G.shape == (4, 10, 5)
+
+    def test_laplace_singularity(self, device):
+        kernel = LaplaceKernel2D()
+        # Point very close to source → large positive value
+        px = torch.tensor([[0.001]], device=device)
+        py = torch.tensor([[0.0]], device=device)
+        sx = torch.tensor([[0.0]], device=device)
+        sy = torch.tensor([[0.0]], device=device)
+        G = kernel.evaluate(px, py, sx, sy)
+        assert G[0, 0, 0] > 0
+
+    def test_helmholtz_shape(self, device):
+        kernel = HelmholtzKernel2D(wavenumber=2.0)
+        px = torch.randn(4, 10, device=device)
+        py = torch.randn(4, 10, device=device)
+        sx = torch.randn(4, 5, device=device)
+        sy = torch.randn(4, 5, device=device)
+        G = kernel.evaluate(px, py, sx, sy)
+        assert G.shape == (4, 10, 5)
+        assert not torch.isnan(G).any()
+
+
+class TestGPUPipeline:
+    def test_simple_pipeline(self, device):
+        config = PipelineConfig(
+            n_samples=10, n_sensors=8, n_queries=5, min_sources=5, max_sources=15,
+            batch_size=10, seed=42, device=str(device),
+        )
+        pipeline = BatchPipeline(
+            curve_gen=FourierStarCurveGenerator("medium"),
+            source_placer=RejectionSourcePlacer(),
+            query_sampler=NormalOffsetQuerySampler(),
+            kernel=LaplaceKernel2D(),
+            feature_asm=SimpleAssembler(),
+            config=config,
+        )
+        data = pipeline.generate()
+        assert data.shape == (50, 3)  # 10 samples * 5 queries, 3 columns
+        assert not torch.isnan(data).any()
+
+    def test_compact_pipeline(self, device):
+        config = PipelineConfig(
+            n_samples=10, n_sensors=16, n_queries=5, min_sources=5, max_sources=15,
+            batch_size=10, seed=42, device=str(device),
+        )
+        pipeline = BatchPipeline(
+            curve_gen=FourierStarCurveGenerator("medium"),
+            source_placer=RejectionSourcePlacer(),
+            query_sampler=NormalOffsetQuerySampler(),
+            kernel=LaplaceKernel2D(),
+            feature_asm=CompactAssembler(),
+            config=config,
+        )
+        data = pipeline.generate()
+        assert data.shape == (50, 19)  # 16 sensors + 2 query + 1 target
+        assert not torch.isnan(data).any()
+
+    def test_full_pipeline(self, device):
+        config = PipelineConfig(
+            n_samples=10, n_sensors=4, n_queries=5, min_sources=5, max_sources=15,
+            batch_size=10, seed=42, device=str(device),
+        )
+        pipeline = BatchPipeline(
+            curve_gen=FourierStarCurveGenerator("medium"),
+            source_placer=RejectionSourcePlacer(),
+            query_sampler=NormalOffsetQuerySampler(),
+            kernel=LaplaceKernel2D(),
+            feature_asm=FullAssembler(),
+            config=config,
+        )
+        data = pipeline.generate()
+        assert data.shape == (50, 39)  # 4*8 + 4 + 2 + 1
+        assert not torch.isnan(data).any()
+
+    def test_helmholtz_pipeline(self, device):
+        config = PipelineConfig(
+            n_samples=10, n_sensors=8, n_queries=5, min_sources=5, max_sources=15,
+            batch_size=10, seed=42, device=str(device),
+        )
+        pipeline = BatchPipeline(
+            curve_gen=FourierStarCurveGenerator("medium"),
+            source_placer=RejectionSourcePlacer(),
+            query_sampler=NormalOffsetQuerySampler(),
+            kernel=HelmholtzKernel2D(wavenumber=2.0),
+            feature_asm=CompactAssembler(),
+            config=config,
+        )
+        data = pipeline.generate()
+        assert data.shape == (50, 11)  # 8 sensors + 2 query + 1 target
+        assert not torch.isnan(data).any()
+
+    def test_multi_batch(self, device):
+        """Pipeline with n_samples > batch_size should produce correct row count."""
+        config = PipelineConfig(
+            n_samples=25, n_sensors=4, n_queries=3, min_sources=3, max_sources=8,
+            batch_size=10, seed=42, device=str(device),
+        )
+        pipeline = BatchPipeline(
+            curve_gen=FourierStarCurveGenerator("easy"),
+            source_placer=RejectionSourcePlacer(),
+            query_sampler=NormalOffsetQuerySampler(),
+            kernel=LaplaceKernel2D(),
+            feature_asm=CompactAssembler(),
+            config=config,
+        )
+        data = pipeline.generate()
+        assert data.shape == (75, 7)  # 25*3 rows, 4+2+1 cols

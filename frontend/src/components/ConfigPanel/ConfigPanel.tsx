@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useConfigStore } from '../../store/configStore';
 import { useGraphStore, type NodeData } from '../../store/graphStore';
 import { uploadCSV, estimateVram, type VramEstimate } from '../../api/client';
@@ -36,6 +36,7 @@ function DataSection() {
   const toSchema = useGraphStore((s) => s.toGraphSchema);
   const optimizer = useConfigStore((s) => s.optimizer);
   const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState('');
   const [filename, setFilename] = useState('');
   const [vramEstimate, setVramEstimate] = useState<VramEstimate | null>(null);
   const [vramLoading, setVramLoading] = useState(false);
@@ -45,6 +46,7 @@ function DataSection() {
     const file = e.target.files?.[0];
     if (!file) return;
     setUploading(true);
+    setUploadError('');
     try {
       const res = await uploadCSV(file);
       config.setField('file_id', res.file_id);
@@ -53,9 +55,11 @@ function DataSection() {
       if (!config.input_columns) config.setField('input_columns', '');
       if (!config.target_columns) config.setField('target_columns', '');
       config.setAvailableColumns(res.columns);
+      config.setNumRows(res.rows);
       setFilename(res.filename);
-    } catch (err) {
-      console.error('Upload failed:', err);
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail || err?.message || 'Upload failed';
+      setUploadError(detail);
     } finally {
       setUploading(false);
     }
@@ -109,6 +113,7 @@ function DataSection() {
           style={{ fontSize: 10, color: '#ccc', width: '100%', marginBottom: 4 }}
         />
         {uploading && <div style={{ color: '#22c55e', fontSize: 10 }}>Uploading...</div>}
+        {uploadError && <div style={{ color: '#ef4444', fontSize: 10, marginBottom: 4 }}>{uploadError}</div>}
         {filename && <div style={{ color: '#808090', fontSize: 10, marginBottom: 4 }}>{filename}</div>}
 
         {config.availableColumns.length > 0 && (
@@ -162,23 +167,21 @@ function DataSection() {
         <div style={{ display: 'flex', gap: 8, marginBottom: 4 }}>
           <div style={{ flex: 1 }}>
             <label style={labelStyle}>Val Split</label>
-            <input
-              type="number"
+            <NumericInput
               value={config.val_ratio}
+              onChange={(v) => config.setField('val_ratio', v)}
+              fallback={0.2}
               min={0.01} max={0.99} step={0.05}
-              onChange={(e) => { const v = e.target.valueAsNumber; if (!isNaN(v)) config.setField('val_ratio', v); }}
-              onBlur={(e) => { if (isNaN(e.target.valueAsNumber)) config.setField('val_ratio', 0.2); }}
               style={inputStyle}
             />
           </div>
           <div style={{ flex: 1 }}>
             <label style={labelStyle}>Batch Size</label>
-            <input
-              type="number"
+            <NumericInput
               value={config.batch_size}
-              min={1} step={1}
-              onChange={(e) => { const v = e.target.valueAsNumber; if (!isNaN(v) && v >= 1) config.setField('batch_size', v); }}
-              onBlur={(e) => { if (isNaN(e.target.valueAsNumber)) config.setField('batch_size', 32); }}
+              onChange={(v) => config.setField('batch_size', v)}
+              fallback={32}
+              min={1} step={1} integer
               style={inputStyle}
             />
           </div>
@@ -205,7 +208,11 @@ function DataSection() {
                 return;
               }
               const inputDim = selectedInputs.size || 1;
-              const est = await estimateVram(schema, inputDim, config.batch_size, optimizer);
+              // Train samples = total rows × (1 - val_ratio)
+              const trainSamples = config.numRows != null
+                ? Math.floor(config.numRows * (1 - config.val_ratio))
+                : undefined;
+              const est = await estimateVram(schema, inputDim, config.batch_size, optimizer, trainSamples);
               setVramEstimate(est);
             } catch (err: any) {
               setVramError(err?.response?.data?.detail || err.message || 'Estimation failed');
@@ -258,6 +265,15 @@ function DataSection() {
             </div>
             <div style={{ color: '#808090', lineHeight: 1.6 }}>
               {vramEstimate.param_count.toLocaleString()} params
+              {vramEstimate.effective_batch_size !== config.batch_size && (
+                <>
+                  <br />
+                  <span style={{ color: '#f59e0b' }}>
+                    Effective batch: {vramEstimate.effective_batch_size.toLocaleString()}
+                    {' '}(capped at dataset)
+                  </span>
+                </>
+              )}
               <br />
               Weights: {(vramEstimate.params_mb / 1024).toFixed(4)} GB
               <br />
@@ -309,23 +325,21 @@ function TrainingSection() {
         <div style={{ display: 'flex', gap: 8, marginBottom: 4 }}>
           <div style={{ flex: 1 }}>
             <label style={labelStyle}>Learning Rate</label>
-            <input
-              type="number"
+            <NumericInput
               value={config.lr}
+              onChange={(v) => config.setField('lr', v)}
+              fallback={0.001}
               min={1e-8} max={10} step={0.001}
-              onChange={(e) => { const v = e.target.valueAsNumber; if (!isNaN(v)) config.setField('lr', v); }}
-              onBlur={(e) => { if (isNaN(e.target.valueAsNumber)) config.setField('lr', 0.001); }}
               style={inputStyle}
             />
           </div>
           <div style={{ flex: 1 }}>
             <label style={labelStyle}>Epochs</label>
-            <input
-              type="number"
+            <NumericInput
               value={config.epochs}
-              min={1} max={10000} step={1}
-              onChange={(e) => { const v = e.target.valueAsNumber; if (!isNaN(v) && v >= 1) config.setField('epochs', v); }}
-              onBlur={(e) => { if (isNaN(e.target.valueAsNumber)) config.setField('epochs', 10); }}
+              onChange={(v) => config.setField('epochs', v)}
+              fallback={10}
+              min={1} max={10000} step={1} integer
               style={inputStyle}
             />
           </div>
@@ -340,12 +354,14 @@ function TestDataSection() {
   const config = useConfigStore();
   const [open, setOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState('');
   const [filename, setFilename] = useState('');
 
   const handleUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setUploading(true);
+    setUploadError('');
     try {
       const res = await uploadCSV(file);
       config.setField('test_file_id', res.file_id);
@@ -353,8 +369,9 @@ function TestDataSection() {
       if (!config.test_target_columns) config.setField('test_target_columns', '');
       config.setTestAvailableColumns(res.columns);
       setFilename(res.filename);
-    } catch (err) {
-      console.error('Upload failed:', err);
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail || err?.message || 'Upload failed';
+      setUploadError(detail);
     } finally {
       setUploading(false);
     }
@@ -413,6 +430,7 @@ function TestDataSection() {
             style={{ fontSize: 10, color: '#ccc', width: '100%', marginBottom: 4 }}
           />
           {uploading && <div style={{ color: '#22c55e', fontSize: 10 }}>Uploading...</div>}
+          {uploadError && <div style={{ color: '#ef4444', fontSize: 10, marginBottom: 4 }}>{uploadError}</div>}
           {filename && <div style={{ color: '#808090', fontSize: 10, marginBottom: 4 }}>{filename}</div>}
 
           {config.testAvailableColumns.length > 0 && (
@@ -580,6 +598,60 @@ function SelectedNodeSection({
         )}
       </div>
     </div>
+  );
+}
+
+// --- Numeric Input (allows free typing, syncs on valid values) ---
+function NumericInput({
+  value,
+  onChange,
+  fallback,
+  min,
+  max,
+  step,
+  integer,
+  style,
+}: {
+  value: number;
+  onChange: (v: number) => void;
+  fallback: number;
+  min?: number;
+  max?: number;
+  step?: number;
+  integer?: boolean;
+  style?: React.CSSProperties;
+}) {
+  const [local, setLocal] = useState(String(value));
+  const prevValue = useRef(value);
+
+  // Sync from store when it changes externally (not from our own edits)
+  useEffect(() => {
+    if (value !== prevValue.current) {
+      setLocal(String(value));
+      prevValue.current = value;
+    }
+  }, [value]);
+
+  return (
+    <input
+      type="text"
+      inputMode="decimal"
+      value={local}
+      step={step}
+      onChange={(e) => setLocal(e.target.value)}
+      onBlur={() => {
+        const v = integer ? parseInt(local) : parseFloat(local);
+        if (isNaN(v) || (min !== undefined && v < min) || (max !== undefined && v > max)) {
+          setLocal(String(fallback));
+          onChange(fallback);
+        } else {
+          prevValue.current = v;
+          setLocal(String(v));
+          onChange(v);
+        }
+      }}
+      style={style}
+    />
   );
 }
 

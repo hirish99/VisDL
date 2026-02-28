@@ -5,11 +5,13 @@ interface ConfigState extends PipelineConfig {
   // CSV metadata (populated after upload)
   availableColumns: string[];
   testAvailableColumns: string[];
+  numRows: number | null;
 
   // Actions
   setField: <K extends keyof PipelineConfig>(key: K, value: PipelineConfig[K]) => void;
   setAvailableColumns: (cols: string[]) => void;
   setTestAvailableColumns: (cols: string[]) => void;
+  setNumRows: (n: number | null) => void;
   getConfig: () => PipelineConfig;
   loadConfig: (config: Partial<PipelineConfig>) => void;
   reset: () => void;
@@ -36,11 +38,13 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
   ...DEFAULT_CONFIG,
   availableColumns: [],
   testAvailableColumns: [],
+  numRows: null,
 
   setField: (key, value) => set({ [key]: value }),
 
   setAvailableColumns: (cols) => set({ availableColumns: cols }),
   setTestAvailableColumns: (cols) => set({ testAvailableColumns: cols }),
+  setNumRows: (n) => set({ numRows: n }),
 
   getConfig: () => {
     const s = get();
@@ -62,7 +66,14 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
     };
   },
 
-  loadConfig: (config) => set({ ...config }),
+  loadConfig: (config) => set((s) => {
+    // Preserve runtime state from current uploads — saved graphs have stale/empty file_ids
+    const { file_id, test_file_id, ...rest } = config;
+    const merged: Partial<ConfigState> = { ...rest };
+    if (file_id && !s.file_id) merged.file_id = file_id;
+    if (test_file_id !== undefined && !s.test_file_id) merged.test_file_id = test_file_id;
+    return merged;
+  }),
 
-  reset: () => set({ ...DEFAULT_CONFIG, availableColumns: [], testAvailableColumns: [] }),
+  reset: () => set({ ...DEFAULT_CONFIG, availableColumns: [], testAvailableColumns: [], numRows: null }),
 }));

@@ -45,7 +45,10 @@ export const useExecutionStore = create<ExecutionState>((set) => ({
   setPaused: (paused) => set({ isPaused: paused }),
   setSessionId: (id) => set({ sessionId: id }),
   setExecutionId: (id) => set({ executionId: id }),
-  addProgress: (p) => set((s) => ({ progress: [...s.progress, p] })),
+  addProgress: (p) => set((s) => {
+    if (!s.isRunning) return s;
+    return { progress: [...s.progress, p] };
+  }),
   setResults: (r) => set({ results: r }),
   setErrors: (e) => set({ errors: e }),
   clearProgress: () => set({ progress: [], errors: [], isPaused: false }),

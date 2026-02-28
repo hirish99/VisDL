@@ -220,6 +220,8 @@ async def estimate_vram(request: VramEstimateRequest):
 
     Builds the model on CPU (no data needed) and calculates memory breakdown.
     """
+    import torch
+
     from ..engine.executor import topological_sort
     from ..engine.graph_module import trace_graph, infer_shapes_graph, GraphModule
 
@@ -227,6 +229,10 @@ async def estimate_vram(request: VramEstimateRequest):
     input_dim = request.input_dim
     batch_size = request.batch_size
     optimizer = request.optimizer
+
+    # Cap batch_size at dataset size (DataLoader never produces larger batches)
+    if request.num_train_samples is not None and request.num_train_samples > 0:
+        batch_size = min(batch_size, request.num_train_samples)
 
     # 1. Execute layer graph to get ArchRef
     order = topological_sort(layer_graph)
@@ -273,20 +279,29 @@ async def estimate_vram(request: VramEstimateRequest):
     optimizer_mult = 2.0 if optimizer in ("Adam", "AdamW") else 1.0
     optimizer_mb = round(params_mb * optimizer_mult, 2)
 
-    # Activations: sum of per-node output features × batch_size × 4 bytes × 2 (fwd+bwd)
-    act_elements = 0
-    for node in all_nodes:
-        for inp in node.inputs:
-            pass  # just need output shapes
-        # Estimate output size from shape inference: last out_features or num_features
-        out_size = node.params.get("out_features") or node.params.get("num_features") or node.params.get("normalized_shape")
-        if out_size is None and node.module_type == "DotProduct":
-            out_size = 1
-        if out_size is None and node.module_type == "Split":
-            out_size = sum(node.params.get("split_sizes", []))
-        if out_size is not None:
-            act_elements += out_size
-    activations_mb = round(act_elements * batch_size * 4 * 2 / MB, 2)
+    # Activations: dummy forward pass to measure actual tensor sizes per layer
+    activation_elements = []
+    hooks = []
+    for module in model.modules():
+        if len(list(module.children())) == 0:  # leaf modules only
+            def _hook(mod, inp, out, _sizes=activation_elements):
+                if isinstance(out, torch.Tensor):
+                    _sizes.append(out.numel())
+                elif isinstance(out, tuple):
+                    for t in out:
+                        if isinstance(t, torch.Tensor):
+                            _sizes.append(t.numel())
+            hooks.append(module.register_forward_hook(_hook))
+
+    dummy = torch.randn(batch_size, input_dim)
+    with torch.no_grad():
+        model(dummy)
+    for h in hooks:
+        h.remove()
+
+    # fwd activations + backward saved tensors ≈ 2×
+    act_bytes = sum(activation_elements) * 4 * 2
+    activations_mb = round(act_bytes / MB, 2)
 
     # Batch data: input + target tensors
     last_linear = [n for n in all_nodes if n.module_type == "Linear"]
@@ -310,6 +325,7 @@ async def estimate_vram(request: VramEstimateRequest):
 
     return VramEstimateResponse(
         param_count=param_count,
+        effective_batch_size=batch_size,
         params_mb=params_mb,
         gradients_mb=gradients_mb,
         optimizer_mb=optimizer_mb,
@@ -329,21 +345,20 @@ async def upload_csv(file: UploadFile = File(...)):
 
     file_id = f"{uuid.uuid4()}_{file.filename}"
     dest = settings.upload_dir / file_id
-    content = await file.read()
-    max_bytes = settings.max_upload_size_mb * 1024 * 1024
-    if len(content) > max_bytes:
-        raise HTTPException(
-            status_code=413,
-            detail=f"File too large ({len(content) // (1024*1024)}MB). Max is {settings.max_upload_size_mb}MB.",
-        )
-    dest.write_bytes(content)
+    # Stream to disk to avoid holding entire file in memory
+    with open(dest, "wb") as f:
+        while chunk := await file.read(8 * 1024 * 1024):  # 8MB chunks
+            f.write(chunk)
 
-    df = pd.read_csv(dest)
+    # Read only header + count rows without loading full dataframe
+    columns = list(pd.read_csv(dest, nrows=0).columns)
+    # Count rows by iterating chunks (memory-efficient for large files)
+    rows = sum(len(chunk) for chunk in pd.read_csv(dest, usecols=[0], chunksize=100_000))
     return UploadResponse(
         file_id=file_id,
         filename=file.filename,
-        columns=list(df.columns),
-        rows=len(df),
+        columns=columns,
+        rows=rows,
     )
 
 

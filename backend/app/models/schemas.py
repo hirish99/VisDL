@@ -95,10 +95,12 @@ class VramEstimateRequest(BaseModel):
     input_dim: int
     batch_size: int = 32
     optimizer: str = "Adam"
+    num_train_samples: int | None = None
 
 
 class VramEstimateResponse(BaseModel):
     param_count: int
+    effective_batch_size: int
     params_mb: float
     gradients_mb: float
     optimizer_mb: float
